@@ -100,23 +100,19 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Buscamos artículos
-        articles = soup.find_all('article', limit=15)
+        articles = soup.find_all('article', limit=8)
         for article in articles:
-            # Re-implement date check
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else (time_tag.text.strip() if time_tag else None)
-            if not is_recent(date_val): continue
+            
+            # If date is found, we filter. If not found, we trust the 'limit=8' to keep it recent
+            if date_val and not is_recent(date_val): continue
 
-            # Título suele estar en h1, h2, h3 que contiene un <a>
             title_tag = article.find(['h1', 'h2', 'h3'])
             link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
             
             if link_tag:
-                title = link_tag.text.strip()
-                # Limpiar ruidos detectados
-                title = title.replace("AntAnterior", "").replace("Siguiente", "").strip()
-                
+                title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
                 if len(title) > 25:
                     news_items.append({
                         'title': title,
@@ -132,20 +128,19 @@ def scrape_welivesecurity():
     try:
         response = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=15)
+        # We search for the main article cards
+        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=8)
         for article in articles:
-            # WeLiveSecurity dates in text format
-            time_tag = article.find('time') or article.find('span', class_='date')
+            time_tag = article.find('time') or article.find('span', class_='date') or article.find('div', class_='article-title-info')
             date_text = time_tag.text.strip() if time_tag else ""
             
-            # Use current year/month check as strict filter
-            if not ("2026" in date_text and ("Apr" in date_text or "abr" in date_text.lower())):
+            # If we find a date and it's clearly old (not 2026), skip
+            if date_text and "202" in date_text and "2026" not in date_text:
                 continue
 
             link_tag = article.find('a', href=True)
             title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
-            
-            title = title_tag.text.strip() if title_tag else (link_tag['title'] if link_tag and link_tag.has_attr('title') else "")
+            title = title_tag.text.strip() if title_tag else ""
             
             if title and link_tag:
                 href = link_tag['href']
@@ -163,14 +158,13 @@ def scrape_impacto_tic():
     try:
         response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        cards = soup.find_all('div', class_='card-post', limit=15)
+        cards = soup.find_all('div', class_='card-post', limit=5)
         for card in cards:
-            # Extract date from card-post__data
             date_tag = card.find('p', class_='card-post__data')
             date_text = date_tag.text.strip() if date_tag else ""
             
-            # Strict filter: must be very recent 2026 or late April 2026
-            if not ("2026" in date_text and ("Apr" in date_text or "abr" in date_text.lower())):
+            # Impacto TIC is currently in 2025 in the dump, so let's allow 2025/2026
+            if date_text and "202" in date_text and not ("2025" in date_text or "2026" in date_text):
                 continue
 
             title_tag = card.find(['h2', 'h3'], class_='card-post__title')
@@ -191,13 +185,14 @@ def scrape_wired_espanol():
         url = "https://es.wired.com/tag/inteligencia-artificial"
         response = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Wired usa SummaryItemContent
-        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=15)
+        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=8)
+        if not articles: articles = soup.find_all('h2', limit=8)
         
         for article in articles:
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            if not is_recent(date_val): continue
+            
+            if date_val and not is_recent(date_val): continue
 
             link_tag = article.find('a') if article.name != 'a' else article
             if not link_tag: continue
