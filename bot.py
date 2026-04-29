@@ -100,12 +100,13 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=8)
+        # Limit to 3 items
+        articles = soup.find_all('article', limit=3)
         for article in articles:
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else (time_tag.text.strip() if time_tag else None)
             
-            # If date is found, we filter. If not found, we trust the 'limit=8' to keep it recent
+            # If date exists and is old, skip. If no date, we take it because it's in top 3.
             if date_val and not is_recent(date_val): continue
 
             title_tag = article.find(['h1', 'h2', 'h3'])
@@ -128,13 +129,13 @@ def scrape_welivesecurity():
     try:
         response = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # We search for the main article cards
-        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=8)
+        # Limit to 3 items
+        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=3)
         for article in articles:
             time_tag = article.find('time') or article.find('span', class_='date') or article.find('div', class_='article-title-info')
             date_text = time_tag.text.strip() if time_tag else ""
             
-            # If we find a date and it's clearly old (not 2026), skip
+            # Strict: if it has a year and is not 2026, skip
             if date_text and "202" in date_text and "2026" not in date_text:
                 continue
 
@@ -158,12 +159,13 @@ def scrape_impacto_tic():
     try:
         response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        cards = soup.find_all('div', class_='card-post', limit=5)
+        # Limit to 3 items
+        cards = soup.find_all('div', class_='card-post', limit=3)
         for card in cards:
             date_tag = card.find('p', class_='card-post__data')
             date_text = date_tag.text.strip() if date_tag else ""
             
-            # Impacto TIC is currently in 2025 in the dump, so let's allow 2025/2026
+            # If it's from 2024 or earlier, skip
             if date_text and "202" in date_text and not ("2025" in date_text or "2026" in date_text):
                 continue
 
@@ -185,8 +187,9 @@ def scrape_wired_espanol():
         url = "https://es.wired.com/tag/inteligencia-artificial"
         response = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=8)
-        if not articles: articles = soup.find_all('h2', limit=8)
+        # Limit to 3 items
+        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=3)
+        if not articles: articles = soup.find_all('h2', limit=3)
         
         for article in articles:
             time_tag = article.find('time')
@@ -219,6 +222,9 @@ def job():
     all_news.extend(scrape_impacto_tic())
     all_news.extend(scrape_wired_espanol())
 
+    # Limit to maximum 3 total news items per cycle
+    all_news = all_news[:3]
+
     new_count = 0
     for item in all_news:
         if item['link'] not in sent_news:
@@ -238,9 +244,10 @@ def job():
 def run_scheduler():
     logger.info("Scheduler started.")
     # Startup check
-    send_to_whatsapp("🔍 *Bot actualizado*\nBuscando noticias de las últimas 48 horas...")
+    send_to_whatsapp("🔍 *Bot actualizado*\nBuscando máximo 3 noticias cada 3 horas...")
     job()
-    schedule.every().hour.do(job)
+    # Change to 3 hours
+    schedule.every(3).hours.do(job)
     while True:
         schedule.run_pending()
         time.sleep(1)
