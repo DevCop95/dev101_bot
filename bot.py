@@ -81,13 +81,14 @@ def send_to_whatsapp(message):
         logger.error(f"Error sending to WhatsApp: {e}")
 
 def is_recent(date_str):
-    """Checks if a date is within the last 48 hours."""
-    if not date_str: return True # If no date found, we assume it's new but filter by title later
+    """Checks if a date is within the last 48 hours. Defaults to False for safety."""
+    if not date_str: return False 
     try:
-        # Try to parse common formats
-        for fmt in ('%Y-%m-%dT%H:%M:%S%z', '%Y-%m-%d', '%d/%m/%Y'):
+        # Normalize and extract only the date part YYYY-MM-DD
+        clean_date = date_str.split('T')[0].strip()
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d'):
             try:
-                dt = datetime.strptime(date_str.split('T')[0], fmt.split('T')[0])
+                dt = datetime.strptime(clean_date, fmt)
                 if datetime.now() - dt < timedelta(days=2):
                     return True
             except: continue
@@ -102,6 +103,11 @@ def scrape_cybersecurity_news():
         # Buscamos artículos
         articles = soup.find_all('article', limit=15)
         for article in articles:
+            # Re-implement date check
+            time_tag = article.find('time')
+            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else (time_tag.text.strip() if time_tag else None)
+            if not is_recent(date_val): continue
+
             # Título suele estar en h1, h2, h3 que contiene un <a>
             title_tag = article.find(['h1', 'h2', 'h3'])
             link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
@@ -128,14 +134,18 @@ def scrape_welivesecurity():
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=15)
         for article in articles:
+            # WeLiveSecurity dates in text format
+            time_tag = article.find('time') or article.find('span', class_='date')
+            date_text = time_tag.text.strip() if time_tag else ""
+            
+            # Use current year/month check as strict filter
+            if not ("2026" in date_text and ("Apr" in date_text or "abr" in date_text.lower())):
+                continue
+
             link_tag = article.find('a', href=True)
             title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
             
-            title = ""
-            if title_tag:
-                title = title_tag.text.strip()
-            elif link_tag and link_tag.has_attr('title'):
-                title = link_tag['title']
+            title = title_tag.text.strip() if title_tag else (link_tag['title'] if link_tag and link_tag.has_attr('title') else "")
             
             if title and link_tag:
                 href = link_tag['href']
@@ -155,6 +165,14 @@ def scrape_impacto_tic():
         soup = BeautifulSoup(response.text, 'html.parser')
         cards = soup.find_all('div', class_='card-post', limit=15)
         for card in cards:
+            # Extract date from card-post__data
+            date_tag = card.find('p', class_='card-post__data')
+            date_text = date_tag.text.strip() if date_tag else ""
+            
+            # Strict filter: must be very recent 2026 or late April 2026
+            if not ("2026" in date_text and ("Apr" in date_text or "abr" in date_text.lower())):
+                continue
+
             title_tag = card.find(['h2', 'h3'], class_='card-post__title')
             link_tag = card.find('a', href=True)
             if title_tag and link_tag:
@@ -175,10 +193,12 @@ def scrape_wired_espanol():
         soup = BeautifulSoup(response.text, 'html.parser')
         # Wired usa SummaryItemContent
         articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=15)
-        if not articles:
-            articles = soup.find_all('h2', limit=15)
-
+        
         for article in articles:
+            time_tag = article.find('time')
+            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
+            if not is_recent(date_val): continue
+
             link_tag = article.find('a') if article.name != 'a' else article
             if not link_tag: continue
             
