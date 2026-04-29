@@ -99,21 +99,24 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=10)
+        # Buscamos artículos
+        articles = soup.find_all('article', limit=15)
         for article in articles:
-            time_tag = article.find('time')
-            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
+            # Título suele estar en h1, h2, h3 que contiene un <a>
+            title_tag = article.find(['h1', 'h2', 'h3'])
+            link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
             
-            if date_val and not is_recent(date_val): continue
-            
-            title_tag = article.find(['h2', 'h1', 'h3'], class_='entry-title') or article.find(['h2', 'h3'])
-            link_tag = article.find('a')
-            if title_tag and link_tag:
-                news_items.append({
-                    'title': title_tag.text.strip(),
-                    'link': link_tag['href'],
-                    'source': 'CyberSecurity News'
-                })
+            if link_tag:
+                title = link_tag.text.strip()
+                # Limpiar ruidos detectados
+                title = title.replace("AntAnterior", "").replace("Siguiente", "").strip()
+                
+                if len(title) > 25:
+                    news_items.append({
+                        'title': title,
+                        'link': link_tag['href'],
+                        'source': 'CyberSecurity News'
+                    })
     except Exception as e:
         logger.error(f"Error in CyberSecurity News: {e}")
     return news_items
@@ -123,21 +126,21 @@ def scrape_welivesecurity():
     try:
         response = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all(['div', 'article'], class_=['c-card', 'text-wrapper'], limit=10)
+        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=15)
         for article in articles:
-            # WeLiveSecurity usually has dates in a span or time tag
-            time_tag = article.find('time') or article.find('span', class_='date')
-            date_val = time_tag.text.strip() if time_tag else None
+            link_tag = article.find('a', href=True)
+            title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
             
-            # Simple check for year 2026 or 2025 in text if parsing fails
-            if date_val and not any(year in date_val for year in ['2026', '2025']): continue
-
-            title_tag = article.find(['h2', 'h3'])
-            link_tag = article.find('a')
-            if title_tag and link_tag:
+            title = ""
+            if title_tag:
+                title = title_tag.text.strip()
+            elif link_tag and link_tag.has_attr('title'):
+                title = link_tag['title']
+            
+            if title and link_tag:
                 href = link_tag['href']
                 news_items.append({
-                    'title': title_tag.text.strip(),
+                    'title': title,
                     'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}",
                     'source': 'WeLiveSecurity'
                 })
@@ -150,14 +153,10 @@ def scrape_impacto_tic():
     try:
         response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=10)
-        for article in articles:
-            time_tag = article.find('time')
-            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            if date_val and not is_recent(date_val): continue
-
-            title_tag = article.find(['h2', 'h3'])
-            link_tag = article.find('a')
+        cards = soup.find_all('div', class_='card-post', limit=15)
+        for card in cards:
+            title_tag = card.find(['h2', 'h3'], class_='card-post__title')
+            link_tag = card.find('a', href=True)
             if title_tag and link_tag:
                 news_items.append({
                     'title': title_tag.text.strip(),
@@ -171,23 +170,27 @@ def scrape_impacto_tic():
 def scrape_wired_espanol():
     news_items = []
     try:
-        response = requests.get("https://es.wired.com/tecnologia/inteligencia-artificial", headers=HEADERS, timeout=15)
+        url = "https://es.wired.com/tag/inteligencia-artificial"
+        response = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.select('div[class*="SummaryItemContent"]', limit=10)
-        for article in articles:
-            time_tag = article.find('time')
-            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            if date_val and not is_recent(date_val): continue
+        # Wired usa SummaryItemContent
+        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=15)
+        if not articles:
+            articles = soup.find_all('h2', limit=15)
 
-            title_tag = article.find(['h2', 'h3'])
-            link_tag = article.find('a')
-            if title_tag and link_tag:
-                href = link_tag['href']
-                news_items.append({
-                    'title': title_tag.text.strip(),
-                    'link': href if href.startswith('http') else f"https://es.wired.com{href}",
-                    'source': 'WIRED en Español'
-                })
+        for article in articles:
+            link_tag = article.find('a') if article.name != 'a' else article
+            if not link_tag: continue
+            
+            title = link_tag.text.strip()
+            if len(title) < 20: continue
+
+            href = link_tag['href']
+            news_items.append({
+                'title': title,
+                'link': href if href.startswith('http') else f"https://es.wired.com{href}",
+                'source': 'WIRED en Español'
+            })
     except Exception as e:
         logger.error(f"Error in WIRED: {e}")
     return news_items
