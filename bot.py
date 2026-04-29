@@ -8,7 +8,6 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 import schedule
-from telegram import Bot
 from flask import Flask
 
 # Load environment variables
@@ -35,6 +34,10 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 SENT_NEWS_FILE = "sent_news.json"
+HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+}
 
 def load_sent_news():
     if os.path.exists(SENT_NEWS_FILE):
@@ -98,20 +101,33 @@ def scrape_cybersecurity_news():
     news_items = []
     try:
         logger.info("Scraping CyberSecurity News...")
-        response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", timeout=15)
+        response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=3)
-        for article in articles:
-            title_tag = article.find('h3')
-            link_tag = article.find('a')
-            desc_tag = article.find('div', class_='entry-content') or article.find('p')
+        # Based on research, titles are often in h2.entry-title
+        articles = soup.find_all(['h2', 'h1'], class_='entry-title', limit=3)
+        for title_tag in articles:
+            link_tag = title_tag.find('a')
             if title_tag and link_tag:
                 news_items.append({
                     'title': title_tag.text.strip(),
                     'link': link_tag['href'],
-                    'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
+                    'content': title_tag.text.strip(),
                     'source': 'CyberSecurity News'
                 })
+        
+        # Fallback if no specific class found
+        if not news_items:
+            articles = soup.find_all('article', limit=3)
+            for article in articles:
+                title_tag = article.find(['h2', 'h3', 'h1'])
+                link_tag = article.find('a')
+                if title_tag and link_tag:
+                    news_items.append({
+                        'title': title_tag.text.strip(),
+                        'link': link_tag['href'],
+                        'content': title_tag.text.strip(),
+                        'source': 'CyberSecurity News'
+                    })
         logger.info(f"Found {len(news_items)} items in CyberSecurity News")
     except Exception as e:
         logger.error(f"Error scraping CyberSecurity News: {e}")
@@ -121,18 +137,25 @@ def scrape_welivesecurity():
     news_items = []
     try:
         logger.info("Scraping WeLiveSecurity...")
-        response = requests.get("https://www.welivesecurity.com/la-es/", timeout=15)
+        response = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('div', class_='text-wrapper', limit=3)
+        # WeLiveSecurity structure often uses articles with specific classes
+        articles = soup.find_all(['div', 'article'], class_=['c-card', 'text-wrapper'], limit=3)
+        if not articles:
+             articles = soup.find_all('h2', limit=3) # Fallback to search for titles directly
+        
         for article in articles:
-            title_tag = article.find('h2')
-            link_tag = article.find('a')
-            desc_tag = article.find('p')
+            title_tag = article if article.name == 'h2' else article.find(['h2', 'h3'])
+            link_tag = article.find('a') if article.name != 'a' else article
+            if not link_tag and title_tag:
+                link_tag = title_tag.find('a')
+            
             if title_tag and link_tag:
+                href = link_tag.get('href', '')
                 news_items.append({
                     'title': title_tag.text.strip(),
-                    'link': link_tag['href'] if link_tag['href'].startswith('http') else f"https://www.welivesecurity.com{link_tag['href']}",
-                    'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
+                    'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}",
+                    'content': title_tag.text.strip(),
                     'source': 'WeLiveSecurity'
                 })
         logger.info(f"Found {len(news_items)} items in WeLiveSecurity")
@@ -144,18 +167,20 @@ def scrape_impacto_tic():
     news_items = []
     try:
         logger.info("Scraping Impacto TIC...")
-        response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", timeout=15)
+        response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=3)
+        articles = soup.find_all(['h2', 'h3'], class_='entry-title', limit=3)
+        if not articles:
+            articles = soup.find_all('article', limit=3)
+            
         for article in articles:
-            title_tag = article.find('h3')
-            link_tag = article.find('a')
-            desc_tag = article.find('div', class_='entry-summary') or article.find('p')
+            title_tag = article if article.name in ['h2', 'h3'] else article.find(['h2', 'h3'])
+            link_tag = article.find('a') if article.name != 'a' else article
             if title_tag and link_tag:
                 news_items.append({
                     'title': title_tag.text.strip(),
                     'link': link_tag['href'],
-                    'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
+                    'content': title_tag.text.strip(),
                     'source': 'Impacto TIC'
                 })
         logger.info(f"Found {len(news_items)} items in Impacto TIC")
@@ -167,19 +192,22 @@ def scrape_wired_espanol():
     news_items = []
     try:
         logger.info("Scraping WIRED en Español...")
-        response = requests.get("https://es.wired.com/tecnologia/inteligencia-artificial", timeout=15)
+        response = requests.get("https://es.wired.com/tecnologia/inteligencia-artificial", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('div', class_='SummaryItemContent-fshLpY', limit=3) or \
-                   soup.find_all('div', class_='summary-item__content', limit=3)
+        # Wired usually has articles in SummaryItem containers
+        articles = soup.select('div[class*="SummaryItemContent"]', limit=3) or \
+                   soup.select('div[class*="summary-item__content"]', limit=3) or \
+                   soup.find_all('h2', limit=3)
+        
         for article in articles:
-            title_tag = article.find('h2') or article.find('h3')
-            link_tag = article.find('a')
-            desc_tag = article.find('div', class_='SummaryItemDek-fWfHte') or article.find('p')
+            title_tag = article if article.name == 'h2' else article.find(['h2', 'h3'])
+            link_tag = article.find('a') if article.name != 'a' else article
             if title_tag and link_tag:
+                href = link_tag['href']
                 news_items.append({
                     'title': title_tag.text.strip(),
-                    'link': link_tag['href'] if link_tag['href'].startswith('http') else f"https://es.wired.com{link_tag['href']}",
-                    'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
+                    'link': href if href.startswith('http') else f"https://es.wired.com{href}",
+                    'content': title_tag.text.strip(),
                     'source': 'WIRED en Español'
                 })
         logger.info(f"Found {len(news_items)} items in WIRED en Español")
@@ -191,6 +219,8 @@ def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
     all_news = []
+    
+    # Run scrapers
     all_news.extend(scrape_cybersecurity_news())
     all_news.extend(scrape_welivesecurity())
     all_news.extend(scrape_impacto_tic())
@@ -208,7 +238,7 @@ def job():
             if len(sent_news) > 200:
                 sent_news.pop(0)
             save_sent_news(sent_news)
-            time.sleep(3) # Small delay between messages
+            time.sleep(3) 
     
     if new_count == 0:
         logger.info("No new news found in this cycle.")
@@ -217,8 +247,8 @@ def job():
 
 def run_scheduler():
     logger.info("Scheduler started.")
-    # Send a startup confirmation to WhatsApp
-    send_to_whatsapp("✅ *Bot de Noticias IA activado*\nEl bot está en línea y buscando noticias.")
+    # Startup check
+    send_to_whatsapp("🔄 *Bot reiniciado*\nBuscando nuevas noticias...")
     
     job()
     schedule.every().hour.do(job)
@@ -227,12 +257,11 @@ def run_scheduler():
         time.sleep(1)
 
 if __name__ == "__main__":
-    # Start scheduler in a separate thread
+    # Start scheduler
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
     
-    # Run Flask app
+    # Run Flask
     port = int(os.environ.get("PORT", 8080))
-    logger.info(f"Starting web server on port {port}")
     app.run(host='0.0.0.0', port=port)
