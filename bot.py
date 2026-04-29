@@ -3,11 +3,13 @@ import time
 import logging
 import json
 import requests
+import threading
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 import schedule
 from telegram import Bot
+from flask import Flask
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +23,13 @@ WHATSAPP_RECIPIENT = os.getenv("WHATSAPP_RECIPIENT")
 # Initialize clients
 groq_client = Groq(api_key=GROQ_API_KEY)
 telegram_bot = Bot(token=TELEGRAM_TOKEN)
+
+# Flask for Render Free Tier
+app = Flask(__name__)
+
+@app.route('/')
+def health_check():
+    return "Bot is running!", 200
 
 # Logging configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -184,16 +193,20 @@ def job():
             save_sent_news(sent_news)
             time.sleep(2)
 
-def main():
-    logger.info("Bot started.")
-    # Run once at startup
+def run_scheduler():
+    logger.info("Scheduler started.")
     job()
-    # Schedule to run every hour
     schedule.every().hour.do(job)
-    
     while True:
         schedule.run_pending()
         time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    # Start scheduler in a separate thread
+    scheduler_thread = threading.Thread(target=run_scheduler)
+    scheduler_thread.daemon = True
+    scheduler_thread.start()
+    
+    # Run Flask app
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
