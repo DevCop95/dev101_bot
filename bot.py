@@ -43,7 +43,8 @@ def load_sent_news():
     if os.path.exists(SENT_NEWS_FILE):
         try:
             with open(SENT_NEWS_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                return [str(x) for x in data]
         except:
             return []
     return []
@@ -81,10 +82,8 @@ def send_to_whatsapp(message):
         logger.error(f"Error sending to WhatsApp: {e}")
 
 def is_recent(date_str):
-    """Checks if a date is within the last 48 hours. Defaults to False for safety."""
     if not date_str: return False 
     try:
-        # Normalize and extract only the date part YYYY-MM-DD
         clean_date = date_str.split('T')[0].strip()
         for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d'):
             try:
@@ -100,26 +99,17 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Limit to 3 items
-        articles = soup.find_all('article', limit=3)
+        articles = soup.find_all('article', limit=5)
         for article in articles:
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else (time_tag.text.strip() if time_tag else None)
-            
-            # If date exists and is old, skip. If no date, we take it because it's in top 3.
             if date_val and not is_recent(date_val): continue
-
             title_tag = article.find(['h1', 'h2', 'h3'])
             link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
-            
             if link_tag:
                 title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
                 if len(title) > 25:
-                    news_items.append({
-                        'title': title,
-                        'link': link_tag['href'],
-                        'source': 'CyberSecurity News'
-                    })
+                    news_items.append({'title': title, 'link': link_tag['href'], 'source': 'CyberSecurity News'})
     except Exception as e:
         logger.error(f"Error in CyberSecurity News: {e}")
     return news_items
@@ -129,27 +119,17 @@ def scrape_welivesecurity():
     try:
         response = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Limit to 3 items
-        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=3)
+        articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=5)
         for article in articles:
             time_tag = article.find('time') or article.find('span', class_='date') or article.find('div', class_='article-title-info')
             date_text = time_tag.text.strip() if time_tag else ""
-            
-            # Strict: if it has a year and is not 2026, skip
-            if date_text and "202" in date_text and "2026" not in date_text:
-                continue
-
+            if date_text and "202" in date_text and "2026" not in date_text: continue
             link_tag = article.find('a', href=True)
             title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
             title = title_tag.text.strip() if title_tag else ""
-            
             if title and link_tag:
                 href = link_tag['href']
-                news_items.append({
-                    'title': title,
-                    'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}",
-                    'source': 'WeLiveSecurity'
-                })
+                news_items.append({'title': title, 'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}", 'source': 'WeLiveSecurity'})
     except Exception as e:
         logger.error(f"Error in WeLiveSecurity: {e}")
     return news_items
@@ -159,24 +139,15 @@ def scrape_impacto_tic():
     try:
         response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Limit to 3 items
-        cards = soup.find_all('div', class_='card-post', limit=3)
+        cards = soup.find_all('div', class_='card-post', limit=5)
         for card in cards:
             date_tag = card.find('p', class_='card-post__data')
             date_text = date_tag.text.strip() if date_tag else ""
-            
-            # If it's from 2024 or earlier, skip
-            if date_text and "202" in date_text and not ("2025" in date_text or "2026" in date_text):
-                continue
-
+            if date_text and "202" in date_text and not ("2025" in date_text or "2026" in date_text): continue
             title_tag = card.find(['h2', 'h3'], class_='card-post__title')
             link_tag = card.find('a', href=True)
             if title_tag and link_tag:
-                news_items.append({
-                    'title': title_tag.text.strip(),
-                    'link': link_tag['href'],
-                    'source': 'Impacto TIC'
-                })
+                news_items.append({'title': title_tag.text.strip(), 'link': link_tag['href'], 'source': 'Impacto TIC'})
     except Exception as e:
         logger.error(f"Error in Impacto TIC: {e}")
     return news_items
@@ -187,28 +158,18 @@ def scrape_wired_espanol():
         url = "https://es.wired.com/tag/inteligencia-artificial"
         response = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Limit to 3 items
-        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=3)
-        if not articles: articles = soup.find_all('h2', limit=3)
-        
+        articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=5)
+        if not articles: articles = soup.find_all('h2', limit=5)
         for article in articles:
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            
             if date_val and not is_recent(date_val): continue
-
             link_tag = article.find('a') if article.name != 'a' else article
-            if not link_tag: continue
-            
-            title = link_tag.text.strip()
-            if len(title) < 20: continue
-
-            href = link_tag['href']
-            news_items.append({
-                'title': title,
-                'link': href if href.startswith('http') else f"https://es.wired.com{href}",
-                'source': 'WIRED en Español'
-            })
+            if link_tag:
+                title = link_tag.text.strip()
+                if len(title) > 20:
+                    href = link_tag['href']
+                    news_items.append({'title': title, 'link': href if href.startswith('http') else f"https://es.wired.com{href}", 'source': 'WIRED en Español'})
     except Exception as e:
         logger.error(f"Error in WIRED: {e}")
     return news_items
@@ -217,50 +178,34 @@ def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
     all_news = []
-    
-    # Collect items (scrapers are already limited to 3 each)
     all_news.extend(scrape_cybersecurity_news())
     all_news.extend(scrape_welivesecurity())
     all_news.extend(scrape_impacto_tic())
     all_news.extend(scrape_wired_espanol())
 
-    # Strict secondary filter for previous years in title or link
-    # This prevents old items from slipping through if scrapers missed them
-    current_year = "2026"
-    bad_years = ["2020", "2021", "2022", "2023", "2024", "2025"]
-    
+    bad_years = ["2020", "2021", "2022", "2023", "2024"]
     filtered_news = []
     for item in all_news:
-        is_old = any(year in item['title'] or year in item['link'] for year in bad_years)
+        is_old = any(year in str(item['title']) or year in str(item['link']) for year in bad_years)
         if not is_old:
-            filtered_news.append(item)
+            if item['link'] not in sent_news and item['title'] not in sent_news:
+                filtered_news.append(item)
 
-    # We only want the TOP 3 absolute newest total
-    # If the list is ordered newest to oldest, we just take the first 3
     final_news = filtered_news[:3]
-
-    new_count = 0
     for item in final_news:
-        if item['link'] not in sent_news:
-            logger.info(f"Processing NEW item: {item['title']}")
-            summary = summarize_news(item['title'], item['title']) 
-            final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
-            send_to_whatsapp(final_message)
-            sent_news.append(item['link'])
-            new_count += 1
-            if len(sent_news) > 200: sent_news.pop(0)
-            save_sent_news(sent_news)
-            time.sleep(3) 
-    
-    if new_count == 0:
-        logger.info("No recent news found.")
+        logger.info(f"Sending: {item['title']}")
+        summary = summarize_news(item['title'], item['title']) 
+        final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
+        send_to_whatsapp(final_message)
+        sent_news.append(item['link'])
+        sent_news.append(item['title'])
+        if len(sent_news) > 400: sent_news = sent_news[-400:]
+        save_sent_news(sent_news)
+        time.sleep(3) 
 
 def run_scheduler():
     logger.info("Scheduler started.")
-    # Startup check
-    send_to_whatsapp("🔍 *Bot actualizado*\nBuscando máximo 3 noticias cada 3 horas...")
     job()
-    # Change to 3 hours
     schedule.every(3).hours.do(job)
     while True:
         schedule.run_pending()
@@ -270,5 +215,4 @@ if __name__ == "__main__":
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
