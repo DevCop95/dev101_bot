@@ -217,16 +217,30 @@ def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
     all_news = []
+    
+    # Collect items (scrapers are already limited to 3 each)
     all_news.extend(scrape_cybersecurity_news())
     all_news.extend(scrape_welivesecurity())
     all_news.extend(scrape_impacto_tic())
     all_news.extend(scrape_wired_espanol())
 
-    # Limit to maximum 3 total news items per cycle
-    all_news = all_news[:3]
+    # Strict secondary filter for previous years in title or link
+    # This prevents old items from slipping through if scrapers missed them
+    current_year = "2026"
+    bad_years = ["2020", "2021", "2022", "2023", "2024", "2025"]
+    
+    filtered_news = []
+    for item in all_news:
+        is_old = any(year in item['title'] or year in item['link'] for year in bad_years)
+        if not is_old:
+            filtered_news.append(item)
+
+    # We only want the TOP 3 absolute newest total
+    # If the list is ordered newest to oldest, we just take the first 3
+    final_news = filtered_news[:3]
 
     new_count = 0
-    for item in all_news:
+    for item in final_news:
         if item['link'] not in sent_news:
             logger.info(f"Processing NEW item: {item['title']}")
             summary = summarize_news(item['title'], item['title']) 
