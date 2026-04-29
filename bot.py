@@ -22,7 +22,6 @@ WHATSAPP_RECIPIENT = os.getenv("WHATSAPP_RECIPIENT")
 
 # Initialize clients
 groq_client = Groq(api_key=GROQ_API_KEY)
-telegram_bot = Bot(token=TELEGRAM_TOKEN)
 
 # Flask for Render Free Tier
 app = Flask(__name__)
@@ -42,20 +41,25 @@ def load_sent_news():
         try:
             with open(SENT_NEWS_FILE, "r") as f:
                 return json.load(f)
-        except:
+        except Exception as e:
+            logger.error(f"Error loading sent news: {e}")
             return []
     return []
 
 def save_sent_news(sent_news):
-    with open(SENT_NEWS_FILE, "w") as f:
-        json.dump(sent_news, f)
+    try:
+        with open(SENT_NEWS_FILE, "w") as f:
+            json.dump(sent_news, f)
+    except Exception as e:
+        logger.error(f"Error saving sent news: {e}")
 
 def summarize_news(title, content):
     try:
+        logger.info(f"Summarizing news: {title[:50]}...")
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la siguiente noticia en un titular impactante y un resumen de máximo 2 frases en español. Formato: Titular\nResumen"},
+                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. Formato: Titular\nResumen"},
                 {"role": "user", "content": f"Título: {title}\nContenido: {content}"}
             ],
             temperature=0.5,
@@ -68,7 +72,7 @@ def summarize_news(title, content):
 
 def send_to_whatsapp(message):
     if not WHATSAPP_RECIPIENT:
-        logger.warning("WHATSAPP_RECIPIENT not set. Skipping WhatsApp send.")
+        logger.warning("WHATSAPP_RECIPIENT not set.")
         return
     
     url = f"{WHAPI_URL.rstrip('/')}/messages/text"
@@ -81,18 +85,22 @@ def send_to_whatsapp(message):
         "body": message
     }
     try:
-        response = requests.post(url, headers=headers, json=payload)
+        logger.info(f"Sending message to WhatsApp ({WHATSAPP_RECIPIENT})...")
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
         response.raise_for_status()
         logger.info("Message sent to WhatsApp successfully.")
     except Exception as e:
         logger.error(f"Error sending to WhatsApp: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            logger.error(f"Response details: {e.response.text}")
 
 def scrape_cybersecurity_news():
     news_items = []
     try:
-        response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", timeout=10)
+        logger.info("Scraping CyberSecurity News...")
+        response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=5)
+        articles = soup.find_all('article', limit=3)
         for article in articles:
             title_tag = article.find('h3')
             link_tag = article.find('a')
@@ -104,6 +112,7 @@ def scrape_cybersecurity_news():
                     'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
                     'source': 'CyberSecurity News'
                 })
+        logger.info(f"Found {len(news_items)} items in CyberSecurity News")
     except Exception as e:
         logger.error(f"Error scraping CyberSecurity News: {e}")
     return news_items
@@ -111,9 +120,10 @@ def scrape_cybersecurity_news():
 def scrape_welivesecurity():
     news_items = []
     try:
-        response = requests.get("https://www.welivesecurity.com/la-es/", timeout=10)
+        logger.info("Scraping WeLiveSecurity...")
+        response = requests.get("https://www.welivesecurity.com/la-es/", timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('div', class_='text-wrapper', limit=5)
+        articles = soup.find_all('div', class_='text-wrapper', limit=3)
         for article in articles:
             title_tag = article.find('h2')
             link_tag = article.find('a')
@@ -125,6 +135,7 @@ def scrape_welivesecurity():
                     'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
                     'source': 'WeLiveSecurity'
                 })
+        logger.info(f"Found {len(news_items)} items in WeLiveSecurity")
     except Exception as e:
         logger.error(f"Error scraping WeLiveSecurity: {e}")
     return news_items
@@ -132,9 +143,10 @@ def scrape_welivesecurity():
 def scrape_impacto_tic():
     news_items = []
     try:
-        response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", timeout=10)
+        logger.info("Scraping Impacto TIC...")
+        response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', limit=5)
+        articles = soup.find_all('article', limit=3)
         for article in articles:
             title_tag = article.find('h3')
             link_tag = article.find('a')
@@ -146,6 +158,7 @@ def scrape_impacto_tic():
                     'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
                     'source': 'Impacto TIC'
                 })
+        logger.info(f"Found {len(news_items)} items in Impacto TIC")
     except Exception as e:
         logger.error(f"Error scraping Impacto TIC: {e}")
     return news_items
@@ -153,10 +166,11 @@ def scrape_impacto_tic():
 def scrape_wired_espanol():
     news_items = []
     try:
-        response = requests.get("https://es.wired.com/tecnologia/inteligencia-artificial", timeout=10)
+        logger.info("Scraping WIRED en Español...")
+        response = requests.get("https://es.wired.com/tecnologia/inteligencia-artificial", timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('div', class_='SummaryItemContent-fshLpY', limit=5) or \
-                   soup.find_all('div', class_='summary-item__content', limit=5)
+        articles = soup.find_all('div', class_='SummaryItemContent-fshLpY', limit=3) or \
+                   soup.find_all('div', class_='summary-item__content', limit=3)
         for article in articles:
             title_tag = article.find('h2') or article.find('h3')
             link_tag = article.find('a')
@@ -168,12 +182,13 @@ def scrape_wired_espanol():
                     'content': desc_tag.text.strip() if desc_tag else title_tag.text.strip(),
                     'source': 'WIRED en Español'
                 })
+        logger.info(f"Found {len(news_items)} items in WIRED en Español")
     except Exception as e:
         logger.error(f"Error scraping WIRED en Español: {e}")
     return news_items
 
 def job():
-    logger.info("Starting news fetch job...")
+    logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
     all_news = []
     all_news.extend(scrape_cybersecurity_news())
@@ -181,20 +196,30 @@ def job():
     all_news.extend(scrape_impacto_tic())
     all_news.extend(scrape_wired_espanol())
 
+    new_count = 0
     for item in all_news:
         if item['link'] not in sent_news:
-            logger.info(f"Processing new item: {item['title']}")
+            logger.info(f"Processing NEW item: {item['title']}")
             summary = summarize_news(item['title'], item.get('content', item['title'])) 
             final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
             send_to_whatsapp(final_message)
             sent_news.append(item['link'])
+            new_count += 1
             if len(sent_news) > 200:
                 sent_news.pop(0)
             save_sent_news(sent_news)
-            time.sleep(2)
+            time.sleep(3) # Small delay between messages
+    
+    if new_count == 0:
+        logger.info("No new news found in this cycle.")
+    else:
+        logger.info(f"Job finished. Sent {new_count} new items.")
 
 def run_scheduler():
     logger.info("Scheduler started.")
+    # Send a startup confirmation to WhatsApp
+    send_to_whatsapp("✅ *Bot de Noticias IA activado*\nEl bot está en línea y buscando noticias.")
+    
     job()
     schedule.every().hour.do(job)
     while True:
@@ -209,4 +234,5 @@ if __name__ == "__main__":
     
     # Run Flask app
     port = int(os.environ.get("PORT", 8080))
+    logger.info(f"Starting web server on port {port}")
     app.run(host='0.0.0.0', port=port)
