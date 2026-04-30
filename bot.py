@@ -99,21 +99,25 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Buscamos artículos
-        articles = soup.find_all('article', limit=5)
+        # Check first 10 articles to skip anchors
+        articles = soup.find_all('article', limit=10)
         for article in articles:
-            time_tag = article.find('time')
-            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else (time_tag.text.strip() if time_tag else None)
-            if date_val and not is_recent(date_val): continue
             title_tag = article.find(['h1', 'h2', 'h3'])
             link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
             if link_tag:
                 title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
+                href = link_tag['href']
+                
+                # RECOGNIZED ANCHORS (skip them)
+                if "Insurance Day" in title or "22" in title or "23" in title or "2022" in href:
+                    continue
+
                 if len(title) > 25:
-                    news_items.append({'title': title, 'link': link_tag['href'], 'source': 'CyberSecurity News'})
+                    news_items.append({'title': title, 'link': href, 'source': 'CyberSecurity News'})
+                    break # Get the first real one
     except Exception as e:
         logger.error(f"Error in CyberSecurity News: {e}")
-    return news_items # Removed redundant reversed here as find_all preserves order
+    return news_items
 
 def scrape_welivesecurity():
     news_items = []
@@ -122,7 +126,7 @@ def scrape_welivesecurity():
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = soup.find_all('div', class_=['article-list-card', 'article'], limit=5)
         for article in articles:
-            time_tag = article.find('time') or article.find('span', class_='date') or article.find('div', class_='article-title-info')
+            time_tag = article.find('time') or article.find('span', class_='date')
             date_text = time_tag.text.strip() if time_tag else ""
             if date_text and "202" in date_text and "2026" not in date_text: continue
             link_tag = article.find('a', href=True)
@@ -131,6 +135,7 @@ def scrape_welivesecurity():
             if title and link_tag:
                 href = link_tag['href']
                 news_items.append({'title': title, 'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}", 'source': 'WeLiveSecurity'})
+                break
     except Exception as e:
         logger.error(f"Error in WeLiveSecurity: {e}")
     return news_items
@@ -149,6 +154,7 @@ def scrape_impacto_tic():
             link_tag = card.find('a', href=True)
             if title_tag and link_tag:
                 news_items.append({'title': title_tag.text.strip(), 'link': link_tag['href'], 'source': 'Impacto TIC'})
+                break
     except Exception as e:
         logger.error(f"Error in Impacto TIC: {e}")
     return news_items
@@ -160,17 +166,17 @@ def scrape_wired_espanol():
         response = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=5)
-        if not articles: articles = soup.find_all('h2', limit=5)
         for article in articles:
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
             if date_val and not is_recent(date_val): continue
-            link_tag = article.find('a') if article.name != 'a' else article
+            link_tag = article.find('a')
             if link_tag:
                 title = link_tag.text.strip()
                 if len(title) > 20:
                     href = link_tag['href']
                     news_items.append({'title': title, 'link': href if href.startswith('http') else f"https://es.wired.com{href}", 'source': 'WIRED en Español'})
+                    break
     except Exception as e:
         logger.error(f"Error in WIRED: {e}")
     return news_items
@@ -178,21 +184,13 @@ def scrape_wired_espanol():
 def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
-    
-    # Priority sources (Cybersecurity News first as it's the most relevant)
-    # We take ONLY the very first news of each source (the newest one on top)
-    sources = [
-        scrape_cybersecurity_news(),
-        scrape_welivesecurity(),
-        scrape_impacto_tic(),
-        scrape_wired_espanol()
-    ]
+    sources = [scrape_cybersecurity_news(), scrape_welivesecurity(), scrape_impacto_tic(), scrape_wired_espanol()]
     
     all_news = []
     for s in sources:
-        if s: all_news.append(s[0]) # ONLY take the first (newest) item of each list
+        if s: all_news.append(s[0])
 
-    bad_years = ["2020", "2021", "2022", "2023", "2024"]
+    bad_years = ["2020", "2021", "2022", "2023", "2024", "2025"]
     filtered_news = []
     for item in all_news:
         is_old = any(year in str(item['title']) or year in str(item['link']) for year in bad_years)
@@ -200,10 +198,9 @@ def job():
             if item['link'] not in sent_news and item['title'] not in sent_news:
                 filtered_news.append(item)
 
-    # Limit to top 3 newest absolute
     final_news = filtered_news[:3]
     for item in final_news:
-        logger.info(f"Sending NEWEST: {item['title']}")
+        logger.info(f"Sending: {item['title']}")
         summary = summarize_news(item['title'], item['title']) 
         final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
         send_to_whatsapp(final_message)
