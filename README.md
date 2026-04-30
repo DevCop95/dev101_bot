@@ -36,7 +36,19 @@
                                   └─────────────┘
 ```
 
-El bot hace scraping de 4 fuentes de noticias (CyberSecurity News, We Live Security, Impacto TIC, WIRED), usa Groq (LLaMA 3.3) para resumir con IA y envía los resultados a WhatsApp cada 3 horas.
+```
+┌──────────────┐    ping cada 5min    ┌──────────────┐
+│  UptimeRobot  │ ─────────────────► │    Render     │
+└──────────────┘                      │  (Web Service) │
+                                     └──────┬───────┘
+                                            │
+                                     ┌──────▼───────┐
+                                     │  Flask App   │
+                                     │  / health    │
+                                     └──────────────┘
+```
+
+**Render** aloja el bot 24/7. **UptimeRobot** lo mantiene despierto con pings cada 5 minutos. Cuando se activa, el bot ejecuta el scraping, resume con Groq y envía a WhatsApp.
 
 ---
 
@@ -108,7 +120,7 @@ Deberías ver en tu WhatsApp un mensaje con una noticia. Si funciona, continuamo
 
 ## ☁️ Despliegue en Render (24/7 gratis)
 
-Render free tier es suficiente porque solo necesita estar "vivo" para ejecutar cada 3 horas.
+Render free tier + UptimeRobot es suficiente para que el bot funcione 24/7 sin costo.
 
 ### Paso 1 — Subir a GitHub
 
@@ -160,6 +172,23 @@ PORT = 8080
 2. Revisa los logs en **Logs** tab para confirmar que funciona
 3. Si todo está bien, verás el bot funcionando 24/7
 
+### Paso 4 — Configurar UptimeRobot para mantenerlo despierto
+
+1. Regístrate en [uptimerobot.com](https://uptimerobot.com/)
+2. Click **Add New Monitor**
+3. Configura:
+
+   | Campo | Valor |
+   |-------|-------|
+   | **Monitor Type** | `HTTP(s)` |
+   | **Friendly Name** | `CyberPulse Bot` |
+   | **URL** | `https://tu-servicio.onrender.com/` |
+   | **Monitoring Interval** | `5 minutes` |
+
+4. Click **Create Monitor**
+
+Ahora UptimeRobot hará ping cada 5 min a tu servicio en Render, manteniéndolo activo. El scheduler interno del bot ejecutará el job de noticias cada 3 horas.
+
 ---
 
 ## 🔄 Flujo de Trabajo del Bot
@@ -187,7 +216,7 @@ telegram_bot/
 
 ## ⚠️ Notas Importantes
 
-- **Render free tier** duerme después de 15 min de inactividad, pero el scheduler interno del bot sigue funcionando y ejecuta el job cada 3 horas apenas se activa
+- **Render free tier** duerme después de 15 min, pero **UptimeRobot** lo despierta con pings cada 5 min, permitiendo que el scheduler ejecute cada 3 horas
 - El archivo `sent_news.json` se crea automáticamente para evitar noticias duplicadas
 - Si WHAPI deja de funcionar, el bot seguirá corriendo pero sin enviar mensajes
 
