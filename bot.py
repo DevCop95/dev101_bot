@@ -99,6 +99,7 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
+        # Buscamos artículos
         articles = soup.find_all('article', limit=5)
         for article in articles:
             time_tag = article.find('time')
@@ -112,7 +113,7 @@ def scrape_cybersecurity_news():
                     news_items.append({'title': title, 'link': link_tag['href'], 'source': 'CyberSecurity News'})
     except Exception as e:
         logger.error(f"Error in CyberSecurity News: {e}")
-    return news_items
+    return news_items # Removed redundant reversed here as find_all preserves order
 
 def scrape_welivesecurity():
     news_items = []
@@ -177,11 +178,19 @@ def scrape_wired_espanol():
 def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
+    
+    # Priority sources (Cybersecurity News first as it's the most relevant)
+    # We take ONLY the very first news of each source (the newest one on top)
+    sources = [
+        scrape_cybersecurity_news(),
+        scrape_welivesecurity(),
+        scrape_impacto_tic(),
+        scrape_wired_espanol()
+    ]
+    
     all_news = []
-    all_news.extend(scrape_cybersecurity_news())
-    all_news.extend(scrape_welivesecurity())
-    all_news.extend(scrape_impacto_tic())
-    all_news.extend(scrape_wired_espanol())
+    for s in sources:
+        if s: all_news.append(s[0]) # ONLY take the first (newest) item of each list
 
     bad_years = ["2020", "2021", "2022", "2023", "2024"]
     filtered_news = []
@@ -191,9 +200,10 @@ def job():
             if item['link'] not in sent_news and item['title'] not in sent_news:
                 filtered_news.append(item)
 
+    # Limit to top 3 newest absolute
     final_news = filtered_news[:3]
     for item in final_news:
-        logger.info(f"Sending: {item['title']}")
+        logger.info(f"Sending NEWEST: {item['title']}")
         summary = summarize_news(item['title'], item['title']) 
         final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
         send_to_whatsapp(final_message)
