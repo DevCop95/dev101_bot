@@ -99,22 +99,39 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        # Check first 10 articles to skip anchors
-        articles = soup.find_all('article', limit=10)
+        
+        # URLS ANCLADAS QUE DEBEMOS IGNORAR (Sabemos que son viejas de 2022)
+        ANCHORED_URLS = [
+            "https://cybersecuritynews.es/ciber-insurance-day-22-el-evento-del-ciberseguro-ya-esta-aqui/",
+            "https://cybersecuritynews.es/cyber-insurance-day-22-objetivo-concienciar-informar-sobre-ciberseguros/",
+            "https://cybersecuritynews.es/la-necesidad-de-contar-con-un-ciberseguro/",
+            "https://cybersecuritynews.es/resumen-de-la-jornada-de-puertas-abiertas-en-cybersecurity-news/",
+            "https://cybersecuritynews.es/os-invitamos-a-la-jornada-de-puertas-abiertas-de-cybersecurity-news/",
+            "https://cybersecuritynews.es/codigos-qr-o-sms-riesgos-de-la-vieja-tecnologia-que-la-pandemia-ha-puesto-de-moda-2/",
+            "https://cybersecuritynews.es/cybercoffee-23-con-raquel-ballesteros-responsable-de-desarrollo-de-mercado-en-basque-cybersecurity-centre/",
+            "https://cybersecuritynews.es/cyberwebinar-el-epm-antidoto-contra-sus-infecciones-del-malware/"
+        ]
+
+        articles = soup.find_all('article', limit=15)
         for article in articles:
             title_tag = article.find(['h1', 'h2', 'h3'])
             link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
             if link_tag:
-                title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
                 href = link_tag['href']
+                title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
                 
-                # RECOGNIZED ANCHORS (skip them)
-                if "Insurance Day" in title or "22" in title or "23" in title or "2022" in href:
+                # FILTRO 1: URLS Ancladas detectadas
+                if href in ANCHORED_URLS:
+                    continue
+                
+                # FILTRO 2: Palabras clave de contenido anclado/viejo
+                if any(k in title for s in title for k in ["Insurance Day", "Puertas Abiertas", "CyberCoffee"]):
                     continue
 
                 if len(title) > 25:
+                    # Encontramos la primera que NO esté en la lista negra
                     news_items.append({'title': title, 'link': href, 'source': 'CyberSecurity News'})
-                    break # Get the first real one
+                    break 
     except Exception as e:
         logger.error(f"Error in CyberSecurity News: {e}")
     return news_items
