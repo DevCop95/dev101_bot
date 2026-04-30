@@ -57,7 +57,7 @@
 - Python 3.11+
 - Cuenta en [Render](https://render.com/) (gratis)
 - Cuenta en [Groq](https://console.groq.com/) (gratis)
-- Cuenta en [WHAPI](https://whapi.com/) (prueba gratuita)
+- Cuenta en [WHAPI](https://whapi.cloud/es/) (prueba gratuita)
 - Bot de Telegram (creado vía @BotFather)
 
 ---
@@ -81,7 +81,7 @@
 4. Copia la key (empieza con `gsk_`)
 
 **WHAPI (prueba gratuita):**
-1. Regístrate en [whapi.com](https://whapi.com/)
+1. Regístrate en [whapi.com](https://whapi.cloud/es/)
 2. En el dashboard, crea un canal de **WhatsApp**
 3. Copia tu **WHAPI Token**
 
