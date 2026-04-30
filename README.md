@@ -38,14 +38,14 @@
 
 ```
 ┌──────────────┐    ping cada 5min    ┌──────────────┐
-│  UptimeRobot  │ ─────────────────► │    Render     │
-└──────────────┘                      │  (Web Service) │
-                                     └──────┬───────┘
-                                            │
-                                     ┌──────▼───────┐
-                                     │  Flask App   │
-                                     │  / health    │
-                                     └──────────────┘
+│  UptimeRobot  │ ─────────────────►  │    Render    │
+└──────────────┘                      │ (Web Service)│
+                                      └──────┬───────┘
+                                             │
+                                      ┌──────▼───────┐
+                                      │  Flask App   │
+                                      │  / health    │
+                                      └──────────────┘
 ```
 
 **Render** aloja el bot 24/7. **UptimeRobot** lo mantiene despierto con pings cada 5 minutos. Cuando se activa, el bot ejecuta el scraping, resume con Groq y envía a WhatsApp.
@@ -89,7 +89,7 @@
 
 ```bash
 # Clona el repositorio
-git clone https://github.com/TU_USUARIO/telegram_bot.git
+git clone https://github.com/DevCop95/dev101_bot.git
 cd telegram_bot
 
 # Crea el archivo .env
