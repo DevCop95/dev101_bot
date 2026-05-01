@@ -11,48 +11,31 @@ from groq import Groq
 import schedule
 from flask import Flask, request
 
-# Load environment variables
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
-FB_EXCHANGE_TOKEN = os.getenv("FB_EXCHANGE_TOKEN")
-WHATSAPP_RECIPIENT = os.getenv("WHATSAPP_RECIPIENT")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-# Initialize clients
 groq_client = Groq(api_key=GROQ_API_KEY)
-
-# Flask for Render Free Tier
 app = Flask(__name__)
 
-# --- INSERTAR AQUÍ PARA LA VALIDACIÓN DE META ---
 @app.route('/webhook', methods=['GET', 'POST'])
 def whatsapp_webhook():
     if request.method == 'GET':
-        # Buscamos la variable en el entorno (Configúrala en Render como VERIFY_TOKEN)
         token_esperado = os.getenv("VERIFY_TOKEN")
-        
         mode = request.args.get('hub.mode')
         token_recibido = request.args.get('hub.verify_token')
         challenge = request.args.get('hub.challenge')
-
         if mode == 'subscribe' and token_recibido == token_esperado:
-            logger.info("✅ Webhook verificado exitosamente.")
             return challenge, 200
-        else:
-            logger.error("❌ Fallo en la verificación del Webhook.")
-            return "Forbidden", 403
-
-    if request.method == 'POST':
-        return "EVENT_RECEIVED", 200
-# -----------------------------------------------
+        return "Forbidden", 403
+    return "EVENT_RECEIVED", 200
 
 @app.route('/')
 def health_check():
     return "Bot is running!", 200
 
-# Logging configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -65,8 +48,7 @@ def load_sent_news():
     if os.path.exists(SENT_NEWS_FILE):
         try:
             with open(SENT_NEWS_FILE, "r") as f:
-                data = json.load(f)
-                return [str(x) for x in data]
+                return [str(x) for x in json.load(f)]
         except:
             return []
     return []
@@ -93,36 +75,27 @@ def summarize_news(title, content):
     except Exception as e:
         return f"{title}\n(Resumen no disponible)"
 
-def send_to_whatsapp(message):
-    phone_id = os.getenv("PHONE_NUMBER_ID")
-    token = os.getenv("FB_EXCHANGE_TOKEN")
-    recipient = os.getenv("WHATSAPP_RECIPIENT")
-    
-    url = f"https://graph.facebook.com/v25.0/{phone_id}/messages"
-    
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
-    
+def send_to_telegram(message):
+    token = os.getenv("TELEGRAM_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
-        "messaging_product": "whatsapp",
-        "to": recipient,
-        "type": "template",
-        "template": {
-            "name": "hello_world",
-            "language": {"code": "en_US"}
-        }
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown",
+        "disable_web_page_preview": False
     }
-
     try:
-        r = requests.post(url, headers=headers, json=payload)
-        logger.info(f"Respuesta de Meta: {r.json()}")
+        r = requests.post(url, json=payload)
+        logger.info(f"Respuesta de Telegram: {r.json()}")
     except Exception as e:
-        logger.error(f"Error enviando a Meta: {e}")
+        logger.error(f"Error enviando a Telegram: {e}")
+
+# --- WhatsApp desactivado ---
+# def send_to_whatsapp(message): ...
 
 def is_recent(date_str):
-    if not date_str: return False 
+    if not date_str: return False
     try:
         clean_date = date_str.split('T')[0].strip()
         for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d'):
@@ -139,8 +112,6 @@ def scrape_cybersecurity_news():
     try:
         response = requests.get("https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # URLS ANCLADAS QUE DEBEMOS IGNORAR (Sabemos que son viejas de 2022)
         ANCHORED_URLS = [
             "https://cybersecuritynews.es/ciber-insurance-day-22-el-evento-del-ciberseguro-ya-esta-aqui/",
             "https://cybersecuritynews.es/cyber-insurance-day-22-objetivo-concienciar-informar-sobre-ciberseguros/",
@@ -151,7 +122,6 @@ def scrape_cybersecurity_news():
             "https://cybersecuritynews.es/cybercoffee-23-con-raquel-ballesteros-responsable-de-desarrollo-de-mercado-en-basque-cybersecurity-centre/",
             "https://cybersecuritynews.es/cyberwebinar-el-epm-antidoto-contra-sus-infecciones-del-malware/"
         ]
-
         articles = soup.find_all('article', limit=15)
         for article in articles:
             title_tag = article.find(['h1', 'h2', 'h3'])
@@ -159,19 +129,11 @@ def scrape_cybersecurity_news():
             if link_tag:
                 href = link_tag['href']
                 title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
-                
-                # FILTRO 1: URLS Ancladas detectadas
-                if href in ANCHORED_URLS:
-                    continue
-                
-                # FILTRO 2: Palabras clave de contenido anclado/viejo
-                if any(k in title for s in title for k in ["Insurance Day", "Puertas Abiertas", "CyberCoffee"]):
-                    continue
-
+                if href in ANCHORED_URLS: continue
+                if any(k in title for k in ["Insurance Day", "Puertas Abiertas", "CyberCoffee"]): continue
                 if len(title) > 25:
-                    # Encontramos la primera que NO esté en la lista negra
                     news_items.append({'title': title, 'link': href, 'source': 'CyberSecurity News'})
-                    break 
+                    break
     except Exception as e:
         logger.error(f"Error in CyberSecurity News: {e}")
     return news_items
@@ -219,8 +181,7 @@ def scrape_impacto_tic():
 def scrape_wired_espanol():
     news_items = []
     try:
-        url = "https://es.wired.com/tag/inteligencia-artificial"
-        response = requests.get(url, headers=HEADERS, timeout=15)
+        response = requests.get("https://es.wired.com/tag/inteligencia-artificial", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
         articles = soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=5)
         for article in articles:
@@ -242,30 +203,26 @@ def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
     sources = [scrape_cybersecurity_news(), scrape_welivesecurity(), scrape_impacto_tic(), scrape_wired_espanol()]
-    
-    all_news = []
-    for s in sources:
-        if s: all_news.append(s[0])
+
+    all_news = [s[0] for s in sources if s]
 
     bad_years = ["2020", "2021", "2022", "2023", "2024", "2025"]
-    filtered_news = []
-    for item in all_news:
-        is_old = any(year in str(item['title']) or year in str(item['link']) for year in bad_years)
-        if not is_old:
-            if item['link'] not in sent_news and item['title'] not in sent_news:
-                filtered_news.append(item)
+    filtered_news = [
+        item for item in all_news
+        if not any(year in str(item['title']) or year in str(item['link']) for year in bad_years)
+        and item['link'] not in sent_news
+        and item['title'] not in sent_news
+    ]
 
-    final_news = filtered_news[:3]
-    for item in final_news:
+    for item in filtered_news[:3]:
         logger.info(f"Sending: {item['title']}")
-        summary = summarize_news(item['title'], item.get('content', item['title'])) 
+        summary = summarize_news(item['title'], item.get('content', item['title']))
         final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
-        send_to_whatsapp(final_message)
-        sent_news.append(item['link'])
-        sent_news.append(item['title'])
+        send_to_telegram(final_message)
+        sent_news.extend([item['link'], item['title']])
         if len(sent_news) > 400: sent_news = sent_news[-400:]
         save_sent_news(sent_news)
-        time.sleep(3) 
+        time.sleep(3)
 
 def run_scheduler():
     logger.info("Scheduler started.")
@@ -275,12 +232,10 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(1)
 
-# ✅ Se ejecuta cuando Gunicorn importa el módulo
 scheduler_thread = threading.Thread(target=run_scheduler)
 scheduler_thread.daemon = True
 scheduler_thread.start()
 
-# Solo para desarrollo local con `python bot.py`
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
