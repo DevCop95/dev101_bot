@@ -256,7 +256,7 @@ def job():
     final_news = filtered_news[:3]
     for item in final_news:
         logger.info(f"Sending: {item['title']}")
-        summary = summarize_news(item['title'], item['title']) 
+        summary = summarize_news(item['title'], item.get('content', item['title'])) 
         final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
         send_to_whatsapp(final_message)
         sent_news.append(item['link'])
