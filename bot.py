@@ -2,6 +2,7 @@ import os
 import time
 import logging
 import json
+import base64
 import requests
 import threading
 from datetime import datetime, timedelta
@@ -16,9 +17,14 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+GITHUB_REPO = "DevCop95/cYHBernews"
+GITHUB_FILE = "noticias.json"
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 app = Flask(__name__)
+
+# ─── Flask routes ────────────────────────────────────────────────────────────
 
 @app.route('/webhook', methods=['GET', 'POST'])
 def whatsapp_webhook():
@@ -36,13 +42,20 @@ def whatsapp_webhook():
 def health_check():
     return "Bot is running!", 200
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# ─── Logging ─────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 SENT_NEWS_FILE = "sent_news.json"
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
 }
+
+# ─── Sent news cache ─────────────────────────────────────────────────────────
 
 def load_sent_news():
     if os.path.exists(SENT_NEWS_FILE):
@@ -60,6 +73,89 @@ def save_sent_news(sent_news):
     except Exception as e:
         logger.error(f"Error saving sent news: {e}")
 
+# ─── GitHub integration ───────────────────────────────────────────────────────
+
+def get_github_file():
+    """Descarga noticias.json de GitHub y retorna (contenido_lista, sha)."""
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        sha = data["sha"]
+        content = json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+        return content, sha
+    except Exception as e:
+        logger.error(f"Error leyendo noticias.json de GitHub: {e}")
+        return None, None
+
+def push_to_github(item, summary_text):
+    """Añade una noticia al principio de noticias.json en GitHub."""
+    if not GITHUB_TOKEN:
+        logger.warning("GITHUB_TOKEN no configurado, saltando push.")
+        return
+
+    noticias, sha = get_github_file()
+    if noticias is None:
+        return
+
+    # Anti-duplicados: revisa los últimos 20 por URL
+    ultimas_urls = [n.get("enlace_original", "") for n in noticias[:20]]
+    if item["link"] in ultimas_urls:
+        logger.info(f"Noticia ya existe en GitHub, saltando: {item['title']}")
+        return
+
+    # Construir nueva entrada con la estructura exacta del JSON
+    nuevo_id = (noticias[0]["id"] + 1) if noticias else 1
+    nueva_noticia = {
+        "id": nuevo_id,
+        "fecha": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "categoria": detectar_categoria(item["source"]),
+        "titulo": summary_text.split("\n")[0].strip(),
+        "resumen": "\n".join(summary_text.split("\n")[1:]).strip(),
+        "url_imagen": f"https://picsum.photos/seed/{nuevo_id}/800/450",
+        "enlace_original": item["link"],
+        "fuente": item["source"]
+    }
+
+    noticias.insert(0, nueva_noticia)
+
+    # Máximo 50 noticias en el JSON
+    noticias = noticias[:50]
+
+    # Push a GitHub
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    payload = {
+        "message": f"feat: add news - {nueva_noticia['titulo'][:60]}",
+        "content": base64.b64encode(json.dumps(noticias, ensure_ascii=False, indent=2).encode("utf-8")).decode("utf-8"),
+        "sha": sha
+    }
+    try:
+        r = requests.put(url, headers=headers, json=payload, timeout=10)
+        r.raise_for_status()
+        logger.info(f"✅ Noticia publicada en GitHub: {nueva_noticia['titulo']}")
+    except Exception as e:
+        logger.error(f"Error haciendo push a GitHub: {e}")
+
+def detectar_categoria(source):
+    categorias = {
+        "CyberSecurity News": "Ciberseguridad",
+        "WeLiveSecurity": "Ciberseguridad",
+        "Impacto TIC": "IA",
+        "WIRED en Español": "IA"
+    }
+    return categorias.get(source, "Tech")
+
+# ─── Groq summarizer ─────────────────────────────────────────────────────────
+
 def summarize_news(title, content):
     try:
         completion = groq_client.chat.completions.create(
@@ -75,12 +171,12 @@ def summarize_news(title, content):
     except Exception as e:
         return f"{title}\n(Resumen no disponible)"
 
+# ─── Telegram sender ──────────────────────────────────────────────────────────
+
 def send_to_telegram(message):
-    token = os.getenv("TELEGRAM_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
-        "chat_id": chat_id,
+        "chat_id": TELEGRAM_CHAT_ID,
         "text": message,
         "parse_mode": "Markdown",
         "disable_web_page_preview": False
@@ -91,8 +187,7 @@ def send_to_telegram(message):
     except Exception as e:
         logger.error(f"Error enviando a Telegram: {e}")
 
-# --- WhatsApp desactivado ---
-# def send_to_whatsapp(message): ...
+# ─── Scrapers ─────────────────────────────────────────────────────────────────
 
 def is_recent(date_str):
     if not date_str: return False
@@ -103,8 +198,10 @@ def is_recent(date_str):
                 dt = datetime.strptime(clean_date, fmt)
                 if datetime.now() - dt < timedelta(days=2):
                     return True
-            except: continue
-    except: pass
+            except:
+                continue
+    except:
+        pass
     return False
 
 def scrape_cybersecurity_news():
@@ -199,11 +296,12 @@ def scrape_wired_espanol():
         logger.error(f"Error in WIRED: {e}")
     return news_items
 
+# ─── Main job ─────────────────────────────────────────────────────────────────
+
 def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
     sources = [scrape_cybersecurity_news(), scrape_welivesecurity(), scrape_impacto_tic(), scrape_wired_espanol()]
-
     all_news = [s[0] for s in sources if s]
 
     bad_years = ["2020", "2021", "2022", "2023", "2024", "2025"]
@@ -219,10 +317,14 @@ def job():
         summary = summarize_news(item['title'], item.get('content', item['title']))
         final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
         send_to_telegram(final_message)
+        push_to_github(item, summary)  # ← nuevo
         sent_news.extend([item['link'], item['title']])
-        if len(sent_news) > 400: sent_news = sent_news[-400:]
+        if len(sent_news) > 400:
+            sent_news = sent_news[-400:]
         save_sent_news(sent_news)
         time.sleep(3)
+
+# ─── Scheduler ────────────────────────────────────────────────────────────────
 
 def run_scheduler():
     logger.info("Scheduler started.")
