@@ -17,6 +17,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_REPO = "DevCop95/cYHBernews"
@@ -121,7 +122,7 @@ def push_to_github(item, summary_text):
         "categoria": detectar_categoria(item["source"]),
         "titulo": clean_markdown(summary_text.split("\n")[0].strip()),
         "resumen": clean_markdown("\n".join(summary_text.split("\n")[1:]).strip()),
-        "url_imagen": f"https://picsum.photos/seed/{get_image_keyword(item['source'])}/800/450",
+        "url_imagen": get_image_url(item["source"]),
         "enlace_original": item["link"],
         "fuente": item["source"]
     }
@@ -159,13 +160,36 @@ def detectar_categoria(source):
     return categorias.get(source, "Tech")
 
 def get_image_keyword(source):
+    keywords = {
+        "CyberSecurity News": "cybersecurity hacker",
+        "WeLiveSecurity": "cybersecurity malware",
+        "Impacto TIC": "artificial intelligence technology",
+        "WIRED en Español": "future technology digital"
+    }
+    return keywords.get(source, "technology")
+
+def get_image_url(source):
+    keyword = get_image_keyword(source)
+    try:
+        r = requests.get(
+            "https://api.unsplash.com/photos/random",
+            params={"query": keyword, "orientation": "landscape"},
+            headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
+            timeout=5
+        )
+        if r.ok:
+            return r.json()["urls"]["regular"]
+    except:
+        pass
+    # Fallback a Picsum si falla
     seeds = {
         "CyberSecurity News": "cybersec99",
         "WeLiveSecurity": "security42",
         "Impacto TIC": "aitech77",
         "WIRED en Español": "futuretech11"
     }
-    return seeds.get(source, "technology01")
+    seed = seeds.get(source, "technology01")
+    return f"https://picsum.photos/seed/{seed}/800/450"
 # ─── Groq summarizer ─────────────────────────────────────────────────────────
 
 def summarize_news(title, content):
@@ -273,11 +297,12 @@ def scrape_impacto_tic():
     try:
         response = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(response.text, 'html.parser')
-        cards = soup.find_all('div', class_='card-post', limit=5)
+        cards = soup.find_all('div', class_='card-post', limit=10)
         for card in cards:
             date_tag = card.find('p', class_='card-post__data')
             date_text = date_tag.text.strip() if date_tag else ""
-            if date_text and "202" in date_text and not ("2025" in date_text or "2026" in date_text): continue
+            # Bloquear explícitamente años viejos además de verificar 2026
+            if any(year in date_text for year in ["2020","2021","2022","2023","2024","2025"]): continue
             title_tag = card.find(['h2', 'h3'], class_='card-post__title')
             link_tag = card.find('a', href=True)
             if title_tag and link_tag:
