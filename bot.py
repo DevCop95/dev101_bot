@@ -91,8 +91,8 @@ def get_github_file():
         r.raise_for_status()
         data = r.json()
         sha = data["sha"]
-        raw = base64.b64decode(data["content"]).decode("utf-8").strip()  # ← strip()
-        content = json.loads(raw) if raw else []                          # ← si vacío, usa []
+        raw = base64.b64decode(data["content"]).decode("utf-8").strip()
+        content = json.loads(raw) if raw else []
         return content, sha
     except Exception as e:
         logger.error(f"Error leyendo noticias.json de GitHub: {e}")
@@ -120,8 +120,8 @@ def push_to_github(item, summary_text):
         "id": nuevo_id,
         "fecha": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "categoria": detectar_categoria(item["source"]),
-        "titulo": clean_markdown(summary_text.split("\n")[0].strip()),
-        "resumen": clean_markdown("\n".join(summary_text.split("\n")[1:]).strip()),
+        "titulo": clean_markdown(summary_text.split("\\n")[0].strip()),
+        "resumen": clean_markdown("\\n".join(summary_text.split("\\n")[1:]).strip()),
         "url_imagen": get_image_url(item["source"]),
         "enlace_original": item["link"],
         "fuente": item["source"]
@@ -190,6 +190,7 @@ def get_image_url(source):
     }
     seed = seeds.get(source, "technology01")
     return f"https://picsum.photos/seed/{seed}/800/450"
+
 # ─── Groq summarizer ─────────────────────────────────────────────────────────
 
 def summarize_news(title, content):
@@ -197,15 +198,15 @@ def summarize_news(title, content):
         completion = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. Formato: Titular\nResumen"},
-                {"role": "user", "content": f"Título: {title}\nContenido: {content}"}
+                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. Formato: Titular\\nResumen"},
+                {"role": "user", "content": f"Título: {title}\\nContenido: {content}"}
             ],
             temperature=0.5,
             max_tokens=150,
         )
         return completion.choices[0].message.content
     except Exception as e:
-        return f"{title}\n(Resumen no disponible)"
+        return f"{title}\\n(Resumen no disponible)"
 
 # ─── Telegram sender ──────────────────────────────────────────────────────────
 
@@ -226,7 +227,8 @@ def send_to_telegram(message):
 # ─── Scrapers ─────────────────────────────────────────────────────────────────
 
 def is_recent(date_str):
-    if not date_str: return False
+    if not date_str:
+        return False
     try:
         clean_date = date_str.split('T')[0].strip()
         for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d'):
@@ -262,8 +264,10 @@ def scrape_cybersecurity_news():
             if link_tag:
                 href = link_tag['href']
                 title = link_tag.text.strip().replace("AntAnterior", "").replace("Siguiente", "").strip()
-                if href in ANCHORED_URLS: continue
-                if any(k in title for k in ["Insurance Day", "Puertas Abiertas", "CyberCoffee"]): continue
+                if href in ANCHORED_URLS:
+                    continue
+                if any(k in title for k in ["Insurance Day", "Puertas Abiertas", "CyberCoffee"]):
+                    continue
                 if len(title) > 25:
                     news_items.append({'title': title, 'link': href, 'source': 'CyberSecurity News'})
                     break
@@ -280,13 +284,18 @@ def scrape_welivesecurity():
         for article in articles:
             time_tag = article.find('time') or article.find('span', class_='date')
             date_text = time_tag.text.strip() if time_tag else ""
-            if date_text and "202" in date_text and "2026" not in date_text: continue
+            if date_text and "202" in date_text and "2026" not in date_text:
+                continue
             link_tag = article.find('a', href=True)
             title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
             title = title_tag.text.strip() if title_tag else ""
             if title and link_tag:
                 href = link_tag['href']
-                news_items.append({'title': title, 'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}", 'source': 'WeLiveSecurity'})
+                news_items.append({
+                    'title': title,
+                    'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}",
+                    'source': 'WeLiveSecurity'
+                })
                 break
     except Exception as e:
         logger.error(f"Error in WeLiveSecurity: {e}")
@@ -301,12 +310,17 @@ def scrape_impacto_tic():
         for card in cards:
             date_tag = card.find('p', class_='card-post__data')
             date_text = date_tag.text.strip() if date_tag else ""
-            # Bloquear explícitamente años viejos además de verificar 2026
-            if any(year in date_text for year in ["2020","2021","2022","2023","2024","2025"]): continue
+            # Bloquear explícitamente años viejos
+            if any(year in date_text for year in ["2020", "2021", "2022", "2023", "2024", "2025"]):
+                continue
             title_tag = card.find(['h2', 'h3'], class_='card-post__title')
             link_tag = card.find('a', href=True)
             if title_tag and link_tag:
-                news_items.append({'title': title_tag.text.strip(), 'link': link_tag['href'], 'source': 'Impacto TIC'})
+                news_items.append({
+                    'title': title_tag.text.strip(),
+                    'link': link_tag['href'],
+                    'source': 'Impacto TIC'
+                })
                 break
     except Exception as e:
         logger.error(f"Error in Impacto TIC: {e}")
@@ -321,13 +335,18 @@ def scrape_wired_espanol():
         for article in articles:
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            if date_val and not is_recent(date_val): continue
+            if date_val and not is_recent(date_val):
+                continue
             link_tag = article.find('a')
             if link_tag:
                 title = link_tag.text.strip()
                 if len(title) > 20:
                     href = link_tag['href']
-                    news_items.append({'title': title, 'link': href if href.startswith('http') else f"https://es.wired.com{href}", 'source': 'WIRED en Español'})
+                    news_items.append({
+                        'title': title,
+                        'link': href if href.startswith('http') else f"https://es.wired.com{href}",
+                        'source': 'WIRED en Español'
+                    })
                     break
     except Exception as e:
         logger.error(f"Error in WIRED: {e}")
@@ -338,38 +357,33 @@ def scrape_wired_espanol():
 def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
-    
+
     csn = scrape_cybersecurity_news()
     wls = scrape_welivesecurity()
     tic = scrape_impacto_tic()
     wrd = scrape_wired_espanol()
-    
+
     logger.info(f"CyberSecurity News: {len(csn)} → {csn}")
     logger.info(f"WeLiveSecurity: {len(wls)} → {wls}")
     logger.info(f"Impacto TIC: {len(tic)} → {tic}")
     logger.info(f"WIRED: {len(wrd)} → {wrd}")
-    
+
     sources = [csn, wls, tic, wrd]
     all_news = [s[0] for s in sources if s]
-    logger.info("--- Starting news fetch job ---")
-    sent_news = load_sent_news()
-    sources = [scrape_cybersecurity_news(), scrape_welivesecurity(), scrape_impacto_tic(), scrape_wired_espanol()]
-    all_news = [s[0] for s in sources if s]
 
-    bad_years = ["2020", "2021", "2022", "2023", "2024", "2025"]
+    # Solo filtra duplicados; la lógica de recencia se hace en cada scraper
     filtered_news = [
         item for item in all_news
-        if not any(year in str(item['title']) or year in str(item['link']) for year in bad_years)
-        and item['link'] not in sent_news
+        if item['link'] not in sent_news
         and item['title'] not in sent_news
     ]
 
     for item in filtered_news[:3]:
         logger.info(f"Sending: {item['title']}")
         summary = summarize_news(item['title'], item.get('content', item['title']))
-        final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
+        final_message = f"🚀 *{item['source']}*\\n\\n{summary}\\n\\n🔗 Leer más: {item['link']}"
         send_to_telegram(final_message)
-        push_to_github(item, summary)  # ← nuevo
+        push_to_github(item, summary)
         sent_news.extend([item['link'], item['title']])
         if len(sent_news) > 400:
             sent_news = sent_news[-400:]
