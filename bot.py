@@ -76,7 +76,6 @@ def save_sent_news(sent_news):
 # ─── GitHub integration ───────────────────────────────────────────────────────
 
 def get_github_file():
-    """Descarga noticias.json de GitHub y retorna (contenido_lista, sha)."""
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
@@ -87,7 +86,8 @@ def get_github_file():
         r.raise_for_status()
         data = r.json()
         sha = data["sha"]
-        content = json.loads(base64.b64decode(data["content"]).decode("utf-8"))
+        raw = base64.b64decode(data["content"]).decode("utf-8").strip()  # ← strip()
+        content = json.loads(raw) if raw else []                          # ← si vacío, usa []
         return content, sha
     except Exception as e:
         logger.error(f"Error leyendo noticias.json de GitHub: {e}")
