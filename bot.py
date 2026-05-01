@@ -94,17 +94,25 @@ def summarize_news(title, content):
         return f"{title}\n(Resumen no disponible)"
 
 def send_to_whatsapp(message):
-    url = f"https://graph.facebook.com/v18.0/{os.getenv('PHONE_NUMBER_ID')}/messages"
+    phone_id = os.getenv("PHONE_NUMBER_ID")
+    token = os.getenv("FB_EXCHANGE_TOKEN")
+    recipient = os.getenv("WHATSAPP_RECIPIENT")
+    
+    # Usamos la versión v25.0 que es la que muestra tu panel de Meta
+    url = f"https://graph.facebook.com/v25.0/{phone_id}/messages"
+    
     headers = {
-        "Authorization": f"Bearer {os.getenv('FB_EXCHANGE_TOKEN')}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
     }
+    
     payload = {
         "messaging_product": "whatsapp",
-        "to": os.getenv("WHATSAPP_RECIPIENT"),
+        "to": recipient,
         "type": "text",
         "text": {"body": message}
     }
+
     try:
         r = requests.post(url, headers=headers, json=payload)
         logger.info(f"Respuesta de Meta: {r.json()}")
