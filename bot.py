@@ -338,6 +338,21 @@ def scrape_wired_espanol():
 def job():
     logger.info("--- Starting news fetch job ---")
     sent_news = load_sent_news()
+    
+    csn = scrape_cybersecurity_news()
+    wls = scrape_welivesecurity()
+    tic = scrape_impacto_tic()
+    wrd = scrape_wired_espanol()
+    
+    logger.info(f"CyberSecurity News: {len(csn)} → {csn}")
+    logger.info(f"WeLiveSecurity: {len(wls)} → {wls}")
+    logger.info(f"Impacto TIC: {len(tic)} → {tic}")
+    logger.info(f"WIRED: {len(wrd)} → {wrd}")
+    
+    sources = [csn, wls, tic, wrd]
+    all_news = [s[0] for s in sources if s]
+    logger.info("--- Starting news fetch job ---")
+    sent_news = load_sent_news()
     sources = [scrape_cybersecurity_news(), scrape_welivesecurity(), scrape_impacto_tic(), scrape_wired_espanol()]
     all_news = [s[0] for s in sources if s]
 
