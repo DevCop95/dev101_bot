@@ -98,7 +98,6 @@ def send_to_whatsapp(message):
     token = os.getenv("FB_EXCHANGE_TOKEN")
     recipient = os.getenv("WHATSAPP_RECIPIENT")
     
-    # Usamos la versión v25.0 que es la que muestra tu panel de Meta
     url = f"https://graph.facebook.com/v25.0/{phone_id}/messages"
     
     headers = {
@@ -109,8 +108,11 @@ def send_to_whatsapp(message):
     payload = {
         "messaging_product": "whatsapp",
         "to": recipient,
-        "type": "text",
-        "text": {"body": message}
+        "type": "template",
+        "template": {
+            "name": "hello_world",
+            "language": {"code": "en_US"}
+        }
     }
 
     try:
