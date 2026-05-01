@@ -273,11 +273,12 @@ def run_scheduler():
         schedule.run_pending()
         time.sleep(1)
 
+# ✅ Se ejecuta cuando Gunicorn importa el módulo
+scheduler_thread = threading.Thread(target=run_scheduler)
+scheduler_thread.daemon = True
+scheduler_thread.start()
+
+# Solo para desarrollo local con `python bot.py`
 if __name__ == "__main__":
-    scheduler_thread = threading.Thread(target=run_scheduler)
-    scheduler_thread.daemon = True
-    scheduler_thread.start()
-    
-    # Render asigna el puerto dinámicamente, esto lo detecta automáticamente
     port = int(os.environ.get("PORT", 8080))
     app.run(host='0.0.0.0', port=port)
