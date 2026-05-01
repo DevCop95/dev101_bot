@@ -117,7 +117,7 @@ def push_to_github(item, summary_text):
         "categoria": detectar_categoria(item["source"]),
         "titulo": summary_text.split("\n")[0].strip(),
         "resumen": "\n".join(summary_text.split("\n")[1:]).strip(),
-        "url_imagen": f"https://picsum.photos/seed/{nuevo_id}/800/450",
+        "url_imagen": f"https://source.unsplash.com/800x450/?{get_image_keyword(item['source'])}",
         "enlace_original": item["link"],
         "fuente": item["source"]
     }
@@ -153,6 +153,15 @@ def detectar_categoria(source):
         "WIRED en Español": "IA"
     }
     return categorias.get(source, "Tech")
+
+def get_image_keyword(source):
+    keywords = {
+        "CyberSecurity News": "cybersecurity,hacker",
+        "WeLiveSecurity": "cybersecurity,security",
+        "Impacto TIC": "artificial,intelligence",
+        "WIRED en Español": "technology,future"
+    }
+    return keywords.get(source, "technology")
 
 # ─── Groq summarizer ─────────────────────────────────────────────────────────
 
