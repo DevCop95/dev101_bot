@@ -15,10 +15,10 @@ from flask import Flask, request
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WHAPI_TOKEN = os.getenv("WHAPI_TOKEN")
-WHAPI_URL = os.getenv("WHAPI_URL")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID")
+FB_EXCHANGE_TOKEN = os.getenv("FB_EXCHANGE_TOKEN")
 WHATSAPP_RECIPIENT = os.getenv("WHATSAPP_RECIPIENT")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Initialize clients
 groq_client = Groq(api_key=GROQ_API_KEY)
@@ -94,14 +94,22 @@ def summarize_news(title, content):
         return f"{title}\n(Resumen no disponible)"
 
 def send_to_whatsapp(message):
-    if not WHATSAPP_RECIPIENT: return
-    url = f"{WHAPI_URL.rstrip('/')}/messages/text"
-    headers = {"Authorization": f"Bearer {WHAPI_TOKEN}", "Content-Type": "application/json"}
-    payload = {"to": WHATSAPP_RECIPIENT, "body": message}
+    url = f"https://graph.facebook.com/v18.0/{os.getenv('PHONE_NUMBER_ID')}/messages"
+    headers = {
+        "Authorization": f"Bearer {os.getenv('FB_EXCHANGE_TOKEN')}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": os.getenv("WHATSAPP_RECIPIENT"),
+        "type": "text",
+        "text": {"body": message}
+    }
     try:
-        requests.post(url, headers=headers, json=payload, timeout=15)
+        r = requests.post(url, headers=headers, json=payload)
+        logger.info(f"Respuesta de Meta: {r.json()}")
     except Exception as e:
-        logger.error(f"Error sending to WhatsApp: {e}")
+        logger.error(f"Error enviando a Meta: {e}")
 
 def is_recent(date_str):
     if not date_str: return False 
