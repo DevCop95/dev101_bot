@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from groq import Groq
 import schedule
-from flask import Flask
+from flask import Flask, request
 
 # Load environment variables
 load_dotenv()
@@ -25,6 +25,28 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Flask for Render Free Tier
 app = Flask(__name__)
+
+# --- INSERTAR AQUÍ PARA LA VALIDACIÓN DE META ---
+@app.route('/webhook', methods=['GET', 'POST'])
+def whatsapp_webhook():
+    if request.method == 'GET':
+        # Buscamos la variable en el entorno (Configúrala en Render como VERIFY_TOKEN)
+        token_esperado = os.getenv("VERIFY_TOKEN")
+        
+        mode = request.args.get('hub.mode')
+        token_recibido = request.args.get('hub.verify_token')
+        challenge = request.args.get('hub.challenge')
+
+        if mode == 'subscribe' and token_recibido == token_esperado:
+            logger.info("✅ Webhook verificado exitosamente.")
+            return challenge, 200
+        else:
+            logger.error("❌ Fallo en la verificación del Webhook.")
+            return "Forbidden", 403
+
+    if request.method == 'POST':
+        return "EVENT_RECEIVED", 200
+# -----------------------------------------------
 
 @app.route('/')
 def health_check():
@@ -239,4 +261,7 @@ if __name__ == "__main__":
     scheduler_thread = threading.Thread(target=run_scheduler)
     scheduler_thread.daemon = True
     scheduler_thread.start()
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+    
+    # Render asigna el puerto dinámicamente, esto lo detecta automáticamente
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
