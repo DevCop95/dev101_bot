@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import logging
 import json
@@ -56,6 +57,9 @@ HEADERS = {
 }
 
 # ─── Sent news cache ─────────────────────────────────────────────────────────
+
+def clean_markdown(text):
+    return re.sub(r'\*+', '', text).strip()
 
 def load_sent_news():
     if os.path.exists(SENT_NEWS_FILE):
@@ -115,9 +119,9 @@ def push_to_github(item, summary_text):
         "id": nuevo_id,
         "fecha": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "categoria": detectar_categoria(item["source"]),
-        "titulo": summary_text.split("\n")[0].strip(),
-        "resumen": "\n".join(summary_text.split("\n")[1:]).strip(),
-        "url_imagen": f"https://source.unsplash.com/800x450/?{get_image_keyword(item['source'])}",
+        "titulo": clean_markdown(summary_text.split("\n")[0].strip()),
+        "resumen": clean_markdown("\n".join(summary_text.split("\n")[1:]).strip()),
+        "url_imagen": f"https://picsum.photos/seed/{get_image_keyword(item['source'])}/800/450",
         "enlace_original": item["link"],
         "fuente": item["source"]
     }
@@ -155,14 +159,13 @@ def detectar_categoria(source):
     return categorias.get(source, "Tech")
 
 def get_image_keyword(source):
-    keywords = {
-        "CyberSecurity News": "cybersecurity,hacker",
-        "WeLiveSecurity": "cybersecurity,security",
-        "Impacto TIC": "artificial,intelligence",
-        "WIRED en Español": "technology,future"
+    seeds = {
+        "CyberSecurity News": "cybersec99",
+        "WeLiveSecurity": "security42",
+        "Impacto TIC": "aitech77",
+        "WIRED en Español": "futuretech11"
     }
-    return keywords.get(source, "technology")
-
+    return seeds.get(source, "technology01")
 # ─── Groq summarizer ─────────────────────────────────────────────────────────
 
 def summarize_news(title, content):
