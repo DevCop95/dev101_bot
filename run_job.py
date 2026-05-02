@@ -58,9 +58,18 @@ def get_github_file():
         r = requests.get(url, headers=headers, timeout=10)
         if r.status_code == 401:
             logger.error(f"Error 401: El token GIT_TOKEN no es válido o no tiene permisos para {GITHUB_REPO}")
+            return None, None
+        if r.status_code == 404:
+            logger.info(f"Archivo {GITHUB_FILE} no encontrado. Se creará uno nuevo.")
+            return [], None
+            
         r.raise_for_status()
         data = r.json()
-        raw = base64.b64decode(data["content"]).decode("utf-8").strip()
+        content = data.get("content", "")
+        if not content:
+            return [], data.get("sha")
+            
+        raw = base64.b64decode(content).decode("utf-8").strip()
         return json.loads(raw) if raw else [], data["sha"]
     except Exception as e:
         logger.error(f"Error leyendo noticias.json: {e}")
