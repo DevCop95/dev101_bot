@@ -24,7 +24,7 @@
 
 ### Componentes
 
-1. **GitHub Actions** (`.github/workflows/bot.yml`): El motor del bot. Se ejecuta automáticamente cada 3 horas o manualmente vía webhook. Realiza el scraping, resume con IA y envía a Telegram.
+1. **GitHub Actions** (`.github/workflows/bot.yml`): El motor del bot. Se ejecuta automáticamente cada 3 horas o manualmente vía webhook. Realiza el scraping (RSS), resume con IA y envía a Telegram.
 2. **Cloudflare Workers** (`api/webhook.js`): El receptor. Recibe mensajes de Telegram y dispara el Action de GitHub cuando se usa `/noticias`.
 3. **Repositorio externo** (`DevCop95/cYHBernews`): El historial. Las noticias se guardan en `noticias.json` para deduplicación y persistencia.
 

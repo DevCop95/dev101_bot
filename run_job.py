@@ -68,9 +68,13 @@ def is_recent(date_str):
 
     try:
         clean = date_str.split('T')[0].strip()
-        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d'):
+        # Intentar formatos comunes + formato RSS (RFC 822)
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d', '%a, %d %b %Y %H:%M:%S %z'):
             try:
-                dt = datetime.strptime(clean, fmt)
+                dt = datetime.strptime(clean if fmt != '%a, %d %b %Y %H:%M:%S %z' else date_str, fmt)
+                # Normalizar a offset-naive para la comparación si es necesario
+                if dt.tzinfo:
+                    dt = dt.replace(tzinfo=None)
                 return datetime.now() - dt < timedelta(days=2)
             except:
                 continue
@@ -247,6 +251,39 @@ def send_to_telegram(message):
     except Exception as e:
         logger.error(f"Error Telegram: {e}")
 
+# ── RSS Scraper ───────────────────────────────────────────────────────────────
+
+def scrape_rss_feed(url, source_name):
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        soup = BeautifulSoup(r.text, 'xml')
+        
+        items = []
+        for entry in soup.find_all('item', limit=10):
+            title = entry.title.text.strip() if entry.title else ""
+            link = entry.link.text.strip() if entry.link else ""
+            pub_date = entry.pubDate.text.strip() if entry.pubDate else ""
+            
+            if not title or not link:
+                continue
+                
+            if pub_date and not is_recent(pub_date):
+                continue
+                
+            items.append({
+                'title': title,
+                'link': link,
+                'source': source_name
+            })
+            # Solo retornamos la primera noticia válida para mantener consistencia con el flujo actual
+            if items:
+                return items
+                
+    except Exception as e:
+        logger.error(f"RSS Error ({source_name}): {e}")
+    return []
+
 # ── Scrapers ──────────────────────────────────────────────────────────────────
 
 BLOCKED_URLS = {
@@ -261,107 +298,19 @@ BLOCKED_URLS = {
 }
 
 def scrape_cybersecurity_news():
-    try:
-        r = requests.get(
-            "https://cybersecuritynews.es/category/actualidad/inteligencia-artificial/",
-            headers=HEADERS, timeout=15
-        )
-        soup = BeautifulSoup(r.text, 'html.parser')
-        
-        # Palabras clave para saltar noticias "sticky" o promocionales viejas
-        bad_keywords = ["Insurance Day", "Puertas Abiertas", "CyberCoffee", "CyberWebinar"]
-        
-        for article in soup.find_all('article', limit=15):
-            title_tag = article.find(['h1', 'h2', 'h3'])
-            link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
-            if not link_tag:
-                continue
-            href, title = link_tag['href'], link_tag.text.strip()
-            title = title.replace("AntAnterior", "").replace("Siguiente", "").strip()
-            
-            # Filtros
-            if href in BLOCKED_URLS:
-                continue
-            if len(title) <= 25:
-                continue
-            if any(k.lower() in title.lower() for k in bad_keywords):
-                continue
-                
-            return [{'title': title, 'link': href, 'source': 'CyberSecurity News'}]
-    except Exception as e:
-        logger.error(f"CSN error: {e}")
-    return []
+    # RSS de CSN (generalmente incluye IA si es el feed principal o de categoría)
+    return scrape_rss_feed("https://cybersecuritynews.es/feed/", "CyberSecurity News")
 
 def scrape_welivesecurity():
-    try:
-        r = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for article in soup.find_all('div', class_='article-list-card', limit=5):
-            # Nuevo selector de fecha para WLS
-            info_tag = article.find('div', class_='article-title-info')
-            date_text = ""
-            if info_tag:
-                spans = info_tag.find_all('span')
-                if spans:
-                    date_text = spans[-1].text.strip()
-            
-            if not date_text:
-                time_tag = article.find('time')
-                date_text = time_tag.text.strip() if time_tag else ""
-
-            if date_text and not is_recent(date_text):
-                continue
-
-            link_tag = article.find('a', href=True)
-            title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
-            title = title_tag.text.strip() if title_tag else ""
-            if title and link_tag:
-                href = link_tag['href']
-                return [{'title': title,
-                         'link': href if href.startswith('http') else f"https://www.welivesecurity.com{href}",
-                         'source': 'WeLiveSecurity'}]
-    except Exception as e:
-        logger.error(f"WLS error: {e}")
-    return []
+    return scrape_rss_feed("https://www.welivesecurity.com/la-es/feed/", "WeLiveSecurity")
 
 def scrape_xataka():
-    try:
-        r = requests.get("https://www.xataka.com/categoria/robotica-e-ia", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for article in soup.find_all('article', class_='abstract-article', limit=5):
-            time_tag = article.find('time')
-            date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
-            if date_val and not is_recent(date_val):
-                continue
-            
-            title_tag = article.find('h2')
-            link_tag = title_tag.find('a') if title_tag else None
-            if title_tag and link_tag:
-                return [{'title': title_tag.text.strip(), 'link': link_tag['href'], 'source': 'Xataka'}]
-    except Exception as e:
-        logger.error(f"Xataka error: {e}")
-    return []
+    # Feed verificado de Xataka
+    return scrape_rss_feed("https://www.xataka.com/index.xml", "Xataka")
 
 def scrape_wired_espanol():
-    try:
-        r = requests.get("https://es.wired.com/tag/inteligencia-artificial", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for article in soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=5):
-            time_tag = article.find('time')
-            date_val = time_tag.text.strip() if time_tag else None
-            if date_val and not is_recent(date_val):
-                continue
-            link_tag = article.find('a')
-            if link_tag:
-                title = link_tag.text.strip()
-                if len(title) > 20:
-                    href = link_tag['href']
-                    return [{'title': title,
-                             'link': href if href.startswith('http') else f"https://es.wired.com{href}",
-                             'source': 'WIRED en Español'}]
-    except Exception as e:
-        logger.error(f"WIRED error: {e}")
-    return []
+    # Feed de Wired España (estándar, a veces requiere el trailing slash)
+    return scrape_rss_feed("https://es.wired.com/feed/rss", "WIRED en Español")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 

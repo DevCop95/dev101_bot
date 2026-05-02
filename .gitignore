@@ -21,6 +21,8 @@ node_modules/
 tmp/
 *.log
 test_scrapers.py
+test_run_job.py
+verify_rss.py
 
 # OS
 .DS_Store
