@@ -1,5 +1,8 @@
 name: News Bot
 on:
+  push:
+    branches:
+      - main
   schedule:
     - cron: '0 */3 * * *'
   workflow_dispatch:
