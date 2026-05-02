@@ -1,15 +1,71 @@
 # 🤖 dev101_bot
 
-> Bot de Telegram que envía noticias de Ciberseguridad e IA directamente a tu chat, funcionando 24/7 en Render.
-
-
-
-
-
+> Bot de Telegram que envía noticias de Ciberseguridad e IA directamente a tu chat, funcionando 24/7 mediante GitHub Actions y Cloudflare Workers.
 
 ***
 
-## 🧩 Arquitectura
+## 🧩 Nueva Arquitectura (Serverless)
+
+A diferencia de la versión original basada en Render, esta nueva versión es 100% serverless, eliminando la necesidad de pings externos y reduciendo costos:
+
+```
+┌─────────────┐     Telegram      ┌─────────────────────┐    dispatches    ┌──────────────────┐
+│   Usuario   │ ◄───────────────► │ Cloudflare Workers  │ ───────────────► │ GitHub Actions   │
+└─────────────┘     Webhook       │    (api/webhook.js) │    Workflow      │ (run_job.py)     │
+                                  └─────────────────────┘                  └────────┬─────────┘
+                                                                                    │
+                                                                           ┌────────▼─────────┐
+                                                                           │  scraping + IA   │
+                                                                           │  (Groq LLaMA 3.3)│
+                                                                           └────────┬─────────┘
+                                                                                    │
+                                  ┌─────────────────────┐     saves data     ┌──────▼──────────┐
+                                  │ Repo: cYHBernews    │ ◄────────────────  │ noticias.json   │
+                                  └─────────────────────┘                    └─────────────────┘
+```
+
+### Componentes Clave:
+1.  **GitHub Actions (`.github/workflows/bot.yml`)**: El "motor" del bot. Se ejecuta automáticamente cada 3 horas o manualmente vía Webhook. Realiza el scraping, resumen con IA y envía a Telegram.
+2.  **Cloudflare Workers (`api/webhook.js`)**: El "receptor". Recibe los mensajes de Telegram. Si envías `/noticias`, dispara el Action de GitHub.
+3.  **Almacenamiento Externo (`DevCop95/cYHBernews`)**: El "historial". Las noticias se guardan en un repositorio separado para persistencia perpetua.
+
+***
+
+## 🚀 Setup de la Nueva Arquitectura
+
+### 1. GitHub Secrets (En este repositorio)
+Ve a **Settings > Secrets and variables > Actions** y configura:
+
+| Secreto | Descripción |
+|---------|-------------|
+| `TELEGRAM_TOKEN` | Token de @BotFather |
+| `TELEGRAM_CHAT_ID` | Tu ID de @userinfobot |
+| `GROQ_API_KEY` | Key de console.groq.com |
+| `GIT_TOKEN` | Personal Access Token (Classic) con scopes `repo` y `workflow` |
+| `UNSPLASH_ACCESS_KEY` | (Opcional) Para imágenes aleatorias |
+
+### 2. Cloudflare Workers Settings
+En tu Dashboard de Cloudflare Workers, añade estas **Variables de Entorno (Secrets)**:
+
+- `TELEGRAM_TOKEN_ENV`: El mismo token de Telegram.
+- `TELEGRAM_CHAT_ID_ENV`: Tu ID de Telegram.
+- `GH_PAT_ENV`: El mismo `GIT_TOKEN` de GitHub.
+
+### 3. Vincular Webhook con Telegram
+Para que Cloudflare reciba tus mensajes, debes registrar la URL de tu Worker en Telegram:
+`https://api.telegram.org/bot<TU_TOKEN>/setWebhook?url=https://tu-worker.workers.dev`
+
+***
+
+## 🤖 Comandos Disponibles
+- `/noticias`: Fuerza la búsqueda y envío de noticias al instante (vía Cloudflare -> GitHub).
+- `/help`: Muestra la ayuda y comandos.
+- `Automático`: Cada 3 horas se envían noticias nuevas sin intervención.
+
+***
+
+## 🧩 Arquitectura Original (Legacy - Render)
+
 
 ```
 ┌─────────────┐     Telegram      ┌──────────────────┐    scraping     ┌──────────────────┐
