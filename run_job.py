@@ -3,17 +3,30 @@ import os, re, time, logging, json, base64, requests
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from groq import Groq
+from dotenv import load_dotenv
+
+# Cargar variables de entorno desde .env si existe (local)
+load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-TELEGRAM_TOKEN       = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID     = os.environ["TELEGRAM_CHAT_ID"]
-UNSPLASH_ACCESS_KEY  = os.environ["UNSPLASH_ACCESS_KEY"]
-GROQ_API_KEY         = os.environ["GROQ_API_KEY"]
-GIT_TOKEN         = os.environ["GIT_TOKEN"]
+# Buscamos el token en varios nombres posibles para mayor compatibilidad
+GIT_TOKEN = os.getenv("GH_PAT") or os.getenv("GIT_TOKEN") or os.getenv("GITHUB_TOKEN") or ""
+
+TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
+UNSPLASH_ACCESS_KEY  = os.getenv("UNSPLASH_ACCESS_KEY", "")
+GROQ_API_KEY         = os.getenv("GROQ_API_KEY", "")
 GITHUB_REPO          = "DevCop95/cYHBernews"
 GITHUB_FILE          = "noticias.json"
 
-groq_client = Groq(api_key=GROQ_API_KEY)
+# Validación mínima
+if not GIT_TOKEN:
+    logging.error("❌ No se encontró ningún token de GitHub (GH_PAT, GIT_TOKEN o GITHUB_TOKEN).")
+
+if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    logging.warning("TELEGRAM_TOKEN o TELEGRAM_CHAT_ID no configurados.")
+
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -50,16 +63,23 @@ def is_recent(date_str):
 def get_github_file():
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     token = GIT_TOKEN.strip()
+    
+    if not token:
+        return None, None
+
+    # Revertimos a "token {token}" que es el formato que usabas en Render
     headers = {
         "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json"
     }
+    
     try:
         r = requests.get(url, headers=headers, timeout=10)
+        
         if r.status_code == 401:
-            logger.error(f"Error 401: El token GIT_TOKEN no es válido o no tiene permisos para {GITHUB_REPO}")
+            logger.error(f"Error 401: El token no es válido o no tiene permisos para {GITHUB_REPO}")
             return None, None
-        if r.status_code == 404:
+        elif r.status_code == 404:
             logger.info(f"Archivo {GITHUB_FILE} no encontrado. Se creará uno nuevo.")
             return [], None
             
@@ -72,9 +92,7 @@ def get_github_file():
         raw = base64.b64decode(content).decode("utf-8").strip()
         return json.loads(raw) if raw else [], data["sha"]
     except Exception as e:
-        logger.error(f"Error leyendo noticias.json: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-             logger.error(f"Response: {e.response.text}")
+        logger.error(f"Error leyendo noticias.json en GitHub: {e}")
         return None, None
 
 def get_published_links():
@@ -122,7 +140,7 @@ def push_to_github(item, summary_text):
     }
     try:
         r = requests.put(url, headers={
-            "Authorization": f"token {token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
         r.raise_for_status()
