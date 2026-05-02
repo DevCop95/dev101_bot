@@ -162,7 +162,7 @@ def push_to_github(item, summary_text):
     }
     try:
         r = requests.put(url, headers={
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"token {token}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
 
@@ -299,11 +299,22 @@ def scrape_welivesecurity():
     try:
         r = requests.get("https://www.welivesecurity.com/la-es/", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
-        for article in soup.find_all('div', class_=['article-list-card', 'article'], limit=5):
-            time_tag = article.find('time') or article.find('span', class_='date')
-            date_text = time_tag.text.strip() if time_tag else ""
-            if date_text and "202" in date_text and "2026" not in date_text:
+        for article in soup.find_all('div', class_='article-list-card', limit=5):
+            # Nuevo selector de fecha para WLS
+            info_tag = article.find('div', class_='article-title-info')
+            date_text = ""
+            if info_tag:
+                spans = info_tag.find_all('span')
+                if spans:
+                    date_text = spans[-1].text.strip()
+            
+            if not date_text:
+                time_tag = article.find('time')
+                date_text = time_tag.text.strip() if time_tag else ""
+
+            if date_text and not is_recent(date_text):
                 continue
+
             link_tag = article.find('a', href=True)
             title_tag = article.find('p', class_='title') or article.find(['h2', 'h3'])
             title = title_tag.text.strip() if title_tag else ""
