@@ -69,7 +69,7 @@ def get_github_file():
 
     # Revertimos a "token {token}" que es el formato que usabas en Render
     headers = {
-        "Authorization": f"token {token}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json"
     }
     
