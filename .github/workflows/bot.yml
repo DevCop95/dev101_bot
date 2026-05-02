@@ -1,11 +1,11 @@
 name: News Bot
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   schedule:
     - cron: '0 */3 * * *'
   workflow_dispatch:
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -21,21 +21,12 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Test token
-        env:
-          GIT_TOKEN: ${{ secrets.GH_PAT }}
-        run: |
-          echo "Token empieza con: ${GIT_TOKEN:0:10}"
-          curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token $GIT_TOKEN" \
-            https://api.github.com/repos/DevCop95/cYHBernews/contents/noticias.json
-
       - name: Run bot
         env:
           TELEGRAM_TOKEN:      ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
           UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
           GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
-          GIT_TOKEN:           ${{ secrets.GH_PAT }}
-          VERIFY_TOKEN:        ${{ secrets.VERIFY_TOKEN }}
+          GH_PAT:              ${{ secrets.GH_PAT }}
+          GIT_TOKEN:           ${{ secrets.GIT_TOKEN }}
         run: python run_job.py

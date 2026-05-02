@@ -19,20 +19,25 @@ GROQ_API_KEY         = os.getenv("GROQ_API_KEY", "")
 GITHUB_REPO          = "DevCop95/cYHBernews"
 GITHUB_FILE          = "noticias.json"
 
-# Validación mínima
-if not GIT_TOKEN:
-    logging.error("❌ No se encontró ningún token de GitHub (GH_PAT, GIT_TOKEN o GITHUB_TOKEN).")
-
-if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-    logging.warning("TELEGRAM_TOKEN o TELEGRAM_CHAT_ID no configurados.")
-
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-
+# Logging setup early
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+
+# Diagnóstico de variables (sin mostrar valores)
+logger.info("--- Diagnóstico de Configuración ---")
+logger.info(f"GIT_TOKEN: {'Configurado' if GIT_TOKEN else 'FALTANTE'}")
+logger.info(f"TELEGRAM_TOKEN: {'Configurado' if TELEGRAM_TOKEN else 'FALTANTE'}")
+logger.info(f"GROQ_API_KEY: {'Configurado' if GROQ_API_KEY else 'FALTANTE'}")
+logger.info("------------------------------------")
+
+# Validación mínima
+if not GIT_TOKEN:
+    logger.error("❌ No se encontró ningún token de GitHub (GH_PAT, GIT_TOKEN o GITHUB_TOKEN).")
+
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
