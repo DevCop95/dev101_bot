@@ -20,71 +20,22 @@
                                   ┌─────────────────────┐     guarda datos   ┌──────▼──────────┐
                                   │ Repo: cYHBernews    │ ◄────────────────  │ noticias.json   │
                                   └─────────────────────┘                    └─────────────────┘
-
----
-
-## 🧩 Arquitectura Original (Legacy - Render)
-
-
-```
-┌─────────────┐     Telegram      ┌──────────────────┐    scraping     ┌──────────────────┐
-│   Usuario   │ ◄───────────────► │   dev101_bot     │ ◄─────────────► │  Fuentes news    │
-└─────────────┘                   │(Flask + Gunicorn)│                 │  (4 websites)    │
-                                  └────────┬─────────┘                 └──────────────────┘
-                                           │
-                                           │ AI summarize
-                                           ▼
-                                  ┌─────────────────┐
-                                  │      Groq        │
-                                  │  LLaMA 3.3 70B   │
-                                  └────────┬─────────┘
-                                           │
-                                           │ sendMessage
-                                           ▼
-                                  ┌─────────────────┐
-                                  │    Telegram     │
-                                  │    Bot API      │
-                                  └─────────────────┘
 ```
 
-```
-┌──────────────┐    ping cada 5min    ┌──────────────────────┐
-│  UptimeRobot │ ─────────────────►   │    Render            │
-└──────────────┘                      │  (Docker Web Service)│
-                                      └──────────┬───────────┘
-                                                 │
-                                      ┌──────────▼───────────┐
-                                      │     Flask + Gunicorn │
-                                      │       /health        │
-                                      └──────────────────────┘
-```
-
-**Render** aloja el bot 24/7 en Docker. **UptimeRobot** lo mantiene despierto con pings cada 5 minutos. El scheduler interno ejecuta el job de noticias cada 3 horas en un hilo separado.
-
-***
-
-## 📋 Requisitos Previos
-
-- Python 3.11+
-- Docker (opcional, para pruebas locales)
-- Cuenta en [Render](https://render.com/) (gratis)
-- Cuenta en [Groq](https://console.groq.com/) (gratis)
-- Bot de Telegram (creado vía @BotFather)
-
-***
 ### Componentes
- 
+
 1. **GitHub Actions** (`.github/workflows/bot.yml`): El motor del bot. Se ejecuta automáticamente cada 3 horas o manualmente vía webhook. Realiza el scraping, resume con IA y envía a Telegram.
 2. **Cloudflare Workers** (`api/webhook.js`): El receptor. Recibe mensajes de Telegram y dispara el Action de GitHub cuando se usa `/noticias`.
 3. **Repositorio externo** (`DevCop95/cYHBernews`): El historial. Las noticias se guardan en `noticias.json` para deduplicación y persistencia.
+
 ---
- 
+
 ## 🚀 Setup
- 
+
 ### 1. GitHub Secrets
- 
+
 Ve a **Settings > Secrets and variables > Actions** en este repositorio y configura:
- 
+
 | Secreto | Descripción |
 |---------|-------------|
 | `GIT_TOKEN` | Personal Access Token (Classic) con scopes `repo` y `workflow` |
@@ -92,33 +43,40 @@ Ve a **Settings > Secrets and variables > Actions** en este repositorio y config
 | `TELEGRAM_CHAT_ID` | Tu ID de Telegram (obtenido con @userinfobot) |
 | `GROQ_API_KEY` | API Key de [console.groq.com](https://console.groq.com/) |
 | `UNSPLASH_ACCESS_KEY` | (Opcional) Para imágenes aleatorias en las noticias |
- 
+
 ### 2. Cloudflare Workers — Variables de entorno
- 
+
 En tu dashboard de Cloudflare Workers > tu worker > **Settings > Variables and Secrets**:
- 
+
 | Variable | Valor |
 |----------|-------|
 | `TELEGRAM_TOKEN_ENV` | El mismo token de Telegram |
 | `TELEGRAM_CHAT_ID_ENV` | Tu ID de Telegram |
 | `GH_PAT_ENV` | El mismo `GIT_TOKEN` de GitHub |
- 
+
 ### 3. Registrar el Webhook en Telegram
- 
+
 Ejecuta una sola vez en el navegador o con curl:
- 
+
 ```
 https://api.telegram.org/bot<TU_TOKEN>/setWebhook?url=https://dev101_bot.dev101-bot.workers.dev
 ```
- 
+
 ---
- 
+
+## 🤖 Comandos disponibles
+
+| Comando | Descripción |
+|---------|-------------|
+| `/noticias` | Fuerza la búsqueda y envío de noticias al instante |
+| `/help` | Muestra los comandos disponibles |
+
 El bot también envía noticias automáticamente **cada 3 horas** vía cron en GitHub Actions.
- 
+
 ---
- 
+
 ## 📁 Estructura del proyecto
- 
+
 ```
 dev101_bot/
 ├── .github/
@@ -132,31 +90,31 @@ dev101_bot/
 ├── .env.example             # Plantilla de variables de entorno
 └── .gitignore
 ```
- 
+
 ---
- 
+
 ## 📰 Fuentes de noticias
- 
+
 | Fuente | Categoría |
 |--------|-----------|
 | CyberSecurity News | Ciberseguridad / IA |
 | WeLiveSecurity (ESET) | Ciberseguridad |
 | Xataka | IA |
 | WIRED en Español | IA |
- 
+
 ---
- 
+
 ## 📦 Dependencias
- 
+
 ```
 requests
 beautifulsoup4
 groq
 python-dotenv
 ```
- 
+
 ---
- 
+
 ## 📝 Licencia
- 
-MIT © 2026 DevYHBMIT © 2026 DevYHB
+
+MIT © 2026 DevYHB
