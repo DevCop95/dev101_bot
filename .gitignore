@@ -1,4 +1,26 @@
+# Wrangler
+.wrangler/
+wrangler-account.js
+
+# Variables de entorno
 .env
-sent_news.json
+.env.local
+.env.production
+
+# Python
 __pycache__/
+*.py[cod]
 *.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+
+# Temp
+tmp/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

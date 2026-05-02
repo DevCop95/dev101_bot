@@ -1,9 +1,6 @@
-name       = "dev101_bot"
-main       = "api/webhook.js"
-compatibility_date = "2024-01-01"
+name = "dev101_bot"
+main = "api/webhook.js"
+compatibility_date = "2025-01-01"
 
-[vars]
-# Los valores reales van en el dashboard de Cloudflare, no aquí
-TELEGRAM_TOKEN_ENV   = ""
-TELEGRAM_CHAT_ID_ENV = ""
-GH_PAT_ENV           = ""
+[env.production]
+workers_dev = true
