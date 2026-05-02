@@ -20,6 +20,7 @@ node_modules/
 # Temp
 tmp/
 *.log
+test_scrapers.py
 
 # OS
 .DS_Store

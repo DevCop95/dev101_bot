@@ -46,6 +46,28 @@ def clean_markdown(text):
 def is_recent(date_str):
     if not date_str:
         return False
+    
+    # Intentar parseo de texto en español (ej: "30 de abril de 2026")
+    meses = {
+        "enero": "01", "febrero": "02", "marzo": "03", "abril": "04",
+        "mayo": "05", "junio": "06", "julio": "07", "agosto": "08",
+        "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
+    }
+    
+    date_clean = date_str.lower().strip()
+    for mes_nombre, mes_num in meses.items():
+        if mes_nombre in date_clean:
+            try:
+                # Extraer día y año si existen
+                parts = re.findall(r'\d+', date_clean)
+                if len(parts) >= 2:
+                    dia = parts[0].zfill(2)
+                    anio = parts[-1]
+                    dt = datetime.strptime(f"{anio}-{mes_num}-{dia}", "%Y-%m-%d")
+                    return datetime.now() - dt < timedelta(days=2)
+            except:
+                pass
+
     try:
         clean = date_str.split('T')[0].strip()
         for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d'):
@@ -143,6 +165,7 @@ def push_to_github(item, summary_text):
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
+
         r.raise_for_status()
         logger.info(f"✅ Publicado en GitHub: {nueva['titulo']}")
     except Exception as e:
@@ -233,6 +256,11 @@ BLOCKED_URLS = {
     "https://cybersecuritynews.es/ciber-insurance-day-22-el-evento-del-ciberseguro-ya-esta-aqui/",
     "https://cybersecuritynews.es/cyber-insurance-day-22-objetivo-concienciar-informar-sobre-ciberseguros/",
     "https://cybersecuritynews.es/la-necesidad-de-contar-con-un-ciberseguro/",
+    "https://cybersecuritynews.es/resumen-de-la-jornada-de-puertas-abiertas-en-cybersecurity-news/",
+    "https://cybersecuritynews.es/os-invitamos-a-la-jornada-de-puertas-abiertas-de-cybersecurity-news/",
+    "https://cybersecuritynews.es/codigos-qr-o-sms-riesgos-de-la-vieja-tecnologia-que-la-pandemia-ha-puesto-de-moda-2/",
+    "https://cybersecuritynews.es/cybercoffee-23-con-raquel-ballesteros-responsable-de-desarrollo-de-mercado-en-basque-cybersecurity-centre/",
+    "https://cybersecuritynews.es/cyberwebinar-el-epm-antidoto-contra-sus-infecciones-del-malware/",
 }
 
 def scrape_cybersecurity_news():
@@ -242,6 +270,10 @@ def scrape_cybersecurity_news():
             headers=HEADERS, timeout=15
         )
         soup = BeautifulSoup(r.text, 'html.parser')
+        
+        # Palabras clave para saltar noticias "sticky" o promocionales viejas
+        bad_keywords = ["Insurance Day", "Puertas Abiertas", "CyberCoffee", "CyberWebinar"]
+        
         for article in soup.find_all('article', limit=15):
             title_tag = article.find(['h1', 'h2', 'h3'])
             link_tag = title_tag.find('a') if title_tag else article.find('a', href=True)
@@ -249,8 +281,15 @@ def scrape_cybersecurity_news():
                 continue
             href, title = link_tag['href'], link_tag.text.strip()
             title = title.replace("AntAnterior", "").replace("Siguiente", "").strip()
-            if href in BLOCKED_URLS or len(title) <= 25:
+            
+            # Filtros
+            if href in BLOCKED_URLS:
                 continue
+            if len(title) <= 25:
+                continue
+            if any(k.lower() in title.lower() for k in bad_keywords):
+                continue
+                
             return [{'title': title, 'link': href, 'source': 'CyberSecurity News'}]
     except Exception as e:
         logger.error(f"CSN error: {e}")
@@ -277,42 +316,22 @@ def scrape_welivesecurity():
         logger.error(f"WLS error: {e}")
     return []
 
-def scrape_impacto_tic():
+def scrape_xataka():
     try:
-        r = requests.get("https://impactotic.co/categoria/tecnologia/ia/", headers=HEADERS, timeout=15)
+        r = requests.get("https://www.xataka.com/categoria/robotica-e-ia", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(r.text, 'html.parser')
-        for card in soup.find_all('div', class_='card-post', limit=10):
-            date_tag = card.find('p', class_='card-post__data')
-            date_text = date_tag.text.strip() if date_tag else ""
-            if any(y in date_text for y in ["2020","2021","2022","2023","2024","2025"]):
-                continue
-            title_tag = card.find(['h2', 'h3'], class_='card-post__title')
-            link_tag = card.find('a', href=True)
-            if title_tag and link_tag:
-                return [{'title': title_tag.text.strip(), 'link': link_tag['href'], 'source': 'Impacto TIC'}]
-    except Exception as e:
-        logger.error(f"TIC error: {e}")
-    return []
-
-def scrape_wired_espanol():
-    try:
-        r = requests.get("https://es.wired.com/tag/inteligencia-artificial", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for article in soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=5):
+        for article in soup.find_all('article', class_='abstract-article', limit=5):
             time_tag = article.find('time')
             date_val = time_tag['datetime'] if time_tag and time_tag.has_attr('datetime') else None
             if date_val and not is_recent(date_val):
                 continue
-            link_tag = article.find('a')
-            if link_tag:
-                title = link_tag.text.strip()
-                if len(title) > 20:
-                    href = link_tag['href']
-                    return [{'title': title,
-                             'link': href if href.startswith('http') else f"https://es.wired.com{href}",
-                             'source': 'WIRED en Español'}]
+            
+            title_tag = article.find('h2')
+            link_tag = title_tag.find('a') if title_tag else None
+            if title_tag and link_tag:
+                return [{'title': title_tag.text.strip(), 'link': link_tag['href'], 'source': 'Xataka'}]
     except Exception as e:
-        logger.error(f"WIRED error: {e}")
+        logger.error(f"Xataka error: {e}")
     return []
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -325,8 +344,9 @@ def job():
     logger.info(f"URLs ya publicadas: {len(published_links)}")
 
     all_news = []
+    # Hemos sustituido scrape_impacto_tic por scrape_xataka
     for scraper in [scrape_cybersecurity_news, scrape_welivesecurity,
-                    scrape_impacto_tic, scrape_wired_espanol]:
+                    scrape_xataka, scrape_wired_espanol]:
         results = scraper()
         if results:
             all_news.append(results[0])
