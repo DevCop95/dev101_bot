@@ -49,18 +49,23 @@ def is_recent(date_str):
 
 def get_github_file():
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+    # Probamos con "Bearer" que es el estándar actual para PATs
     headers = {
-        "Authorization": f"token {GIT_TOKEN}",
+        "Authorization": f"Bearer {GIT_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
     try:
         r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 401:
+            logger.error(f"Error 401: El token GIT_TOKEN no es válido o no tiene permisos para {GITHUB_REPO}")
         r.raise_for_status()
         data = r.json()
         raw = base64.b64decode(data["content"]).decode("utf-8").strip()
         return json.loads(raw) if raw else [], data["sha"]
     except Exception as e:
         logger.error(f"Error leyendo noticias.json: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+             logger.error(f"Response: {e.response.text}")
         return None, None
 
 def get_published_links():
@@ -107,13 +112,15 @@ def push_to_github(item, summary_text):
     }
     try:
         r = requests.put(url, headers={
-            "Authorization": f"token {GIT_TOKEN}",
+            "Authorization": f"Bearer {GIT_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
         r.raise_for_status()
         logger.info(f"✅ Publicado en GitHub: {nueva['titulo']}")
     except Exception as e:
         logger.error(f"Error push GitHub: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+             logger.error(f"Response: {e.response.text}")
 
 def detectar_categoria(source):
     return {
@@ -152,6 +159,9 @@ def get_image_url(source):
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
 def summarize_news(title, content):
+    if not GROQ_API_KEY:
+        logger.error("GROQ_API_KEY no configurada")
+        return f"{title}\n(Resumen no disponible)"
     try:
         r = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
@@ -170,13 +180,22 @@ def summarize_news(title, content):
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
 def send_to_telegram(message):
+    # Limpiamos el token por si acaso viene con prefijo 'bot' o espacios
+    token = TELEGRAM_TOKEN.strip()
+    if token.lower().startswith("bot"):
+        token = token[3:]
+    
     try:
         r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+            f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": message,
-                  "parse_mode": "Markdown", "disable_web_page_preview": False}
+                  "parse_mode": "Markdown", "disable_web_page_preview": False},
+            timeout=10
         )
-        logger.info(f"Telegram: {r.status_code}")
+        if r.status_code != 200:
+            logger.error(f"Telegram Error {r.status_code}: {r.text}")
+        else:
+            logger.info(f"Telegram: {r.status_code}")
     except Exception as e:
         logger.error(f"Error Telegram: {e}")
 
