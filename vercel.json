@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/webhook.py": {
+      "runtime": "vercel-python@3.0"
+    }
+  }
+}
