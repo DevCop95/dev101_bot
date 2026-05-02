@@ -9,7 +9,7 @@ TELEGRAM_TOKEN       = os.environ["TELEGRAM_TOKEN"]
 TELEGRAM_CHAT_ID     = os.environ["TELEGRAM_CHAT_ID"]
 UNSPLASH_ACCESS_KEY  = os.environ["UNSPLASH_ACCESS_KEY"]
 GROQ_API_KEY         = os.environ["GROQ_API_KEY"]
-GITHUB_TOKEN         = os.environ["GITHUB_TOKEN"]
+GIT_TOKEN         = os.environ["GIT_TOKEN"]
 GITHUB_REPO          = "DevCop95/cYHBernews"
 GITHUB_FILE          = "noticias.json"
 
@@ -50,7 +50,7 @@ def is_recent(date_str):
 def get_github_file():
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
+        "Authorization": f"token {GIT_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
     }
     try:
@@ -71,7 +71,7 @@ def get_published_links():
     return {n.get("enlace_original", "") for n in noticias}
 
 def push_to_github(item, summary_text):
-    if not GITHUB_TOKEN:
+    if not GIT_TOKEN:
         return
     noticias, sha = get_github_file()
     if noticias is None:
@@ -107,7 +107,7 @@ def push_to_github(item, summary_text):
     }
     try:
         r = requests.put(url, headers={
-            "Authorization": f"token {GITHUB_TOKEN}",
+            "Authorization": f"token {GIT_TOKEN}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
         r.raise_for_status()
