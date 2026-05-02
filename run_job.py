@@ -342,6 +342,27 @@ def scrape_xataka():
         logger.error(f"Xataka error: {e}")
     return []
 
+def scrape_wired_espanol():
+    try:
+        r = requests.get("https://es.wired.com/tag/inteligencia-artificial", headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(r.text, 'html.parser')
+        for article in soup.find_all('div', class_=lambda x: x and 'SummaryItemContent' in x, limit=5):
+            time_tag = article.find('time')
+            date_val = time_tag.text.strip() if time_tag else None
+            if date_val and not is_recent(date_val):
+                continue
+            link_tag = article.find('a')
+            if link_tag:
+                title = link_tag.text.strip()
+                if len(title) > 20:
+                    href = link_tag['href']
+                    return [{'title': title,
+                             'link': href if href.startswith('http') else f"https://es.wired.com{href}",
+                             'source': 'WIRED en Español'}]
+    except Exception as e:
+        logger.error(f"WIRED error: {e}")
+    return []
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def job():
