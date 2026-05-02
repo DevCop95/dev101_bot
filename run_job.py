@@ -49,9 +49,9 @@ def is_recent(date_str):
 
 def get_github_file():
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
-    # Probamos con "Bearer" que es el estándar actual para PATs
+    token = GIT_TOKEN.strip()
     headers = {
-        "Authorization": f"Bearer {GIT_TOKEN}",
+        "Authorization": f"token {token}",
         "Accept": "application/vnd.github.v3+json"
     }
     try:
@@ -76,7 +76,8 @@ def get_published_links():
     return {n.get("enlace_original", "") for n in noticias}
 
 def push_to_github(item, summary_text):
-    if not GIT_TOKEN:
+    token = GIT_TOKEN.strip()
+    if not token:
         return
     noticias, sha = get_github_file()
     if noticias is None:
@@ -112,7 +113,7 @@ def push_to_github(item, summary_text):
     }
     try:
         r = requests.put(url, headers={
-            "Authorization": f"Bearer {GIT_TOKEN}",
+            "Authorization": f"token {token}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
         r.raise_for_status()
