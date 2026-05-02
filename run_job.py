@@ -9,8 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-# Buscamos el token en varios nombres posibles para mayor compatibilidad
-GIT_TOKEN = os.getenv("GH_PAT") or os.getenv("GIT_TOKEN") or os.getenv("GITHUB_TOKEN") or ""
+GIT_TOKEN = os.getenv("GIT_TOKEN") or os.getenv("GH_PAT") or ""
 
 TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -26,16 +25,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Diagnóstico de variables (sin mostrar valores)
+# Diagnóstico de variables
 logger.info("--- Diagnóstico de Configuración ---")
 logger.info(f"GIT_TOKEN: {'Configurado' if GIT_TOKEN else 'FALTANTE'}")
-logger.info(f"TELEGRAM_TOKEN: {'Configurado' if TELEGRAM_TOKEN else 'FALTANTE'}")
-logger.info(f"GROQ_API_KEY: {'Configurado' if GROQ_API_KEY else 'FALTANTE'}")
 logger.info("------------------------------------")
-
-# Validación mínima
-if not GIT_TOKEN:
-    logger.error("❌ No se encontró ningún token de GitHub (GH_PAT, GIT_TOKEN o GITHUB_TOKEN).")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
@@ -94,9 +87,8 @@ def get_github_file():
     if not token:
         return None, None
 
-    # Revertimos a "token {token}" que es el formato que usabas en Render
     headers = {
-        "Authorization": f"token {token}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json"
     }
     
@@ -167,7 +159,7 @@ def push_to_github(item, summary_text):
     }
     try:
         r = requests.put(url, headers={
-            "Authorization": f"token {token}",
+            "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github.v3+json"
         }, json=payload, timeout=10)
 
