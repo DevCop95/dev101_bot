@@ -305,8 +305,8 @@ def scrape_welivesecurity():
     return scrape_rss_feed("https://www.welivesecurity.com/la-es/feed/", "WeLiveSecurity")
 
 def scrape_xataka():
-    # Feed verificado de Xataka
-    return scrape_rss_feed("https://www.xataka.com/index.xml", "Xataka")
+    # Feed verificado de Xataka (el index reenvía hacia acá)
+    return scrape_rss_feed("https://www.xataka.com/feedburner.xml", "Xataka")
 
 def scrape_wired_espanol():
     # Feed de Wired España (estándar, a veces requiere el trailing slash)

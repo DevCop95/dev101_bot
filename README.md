@@ -109,6 +109,7 @@ dev101_bot/
 ```
 requests
 beautifulsoup4
+lxml
 groq
 python-dotenv
 ```
