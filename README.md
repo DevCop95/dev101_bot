@@ -115,10 +115,6 @@ python-dotenv
 
 ---
 
-## 📝 Licencia
-
-MIT © 2026 DevYHB
-
 ## 🧩 Arquitectura Original (Legacy - Render)
 
 
