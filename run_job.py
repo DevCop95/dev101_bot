@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from groq import Groq
 from dotenv import load_dotenv
+import cloudscraper
 
 # Cargar variables de entorno desde .env si existe (local)
 load_dotenv()
@@ -32,19 +33,19 @@ logger.info("------------------------------------")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# User-Agent y headers avanzados para evitar bloqueos (403 Forbidden)
+# Inicializamos el scraper de Cloudflare una sola vez
+scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    }
+)
+
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
     'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
     'Referer': 'https://www.google.com/',
-    'Connection': 'keep-alive',
-    'Upgrade-Insecure-Requests': '1',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'cross-site',
-    'Sec-Fetch-User': '?1',
-    'Cache-Control': 'max-age=0',
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -108,6 +109,7 @@ def get_github_file():
     }
     
     try:
+        # Para la API de GitHub usamos requests normal (no suele tener Cloudflare agresivo para API)
         r = requests.get(url, headers=headers, timeout=10)
         
         if r.status_code == 401:
@@ -176,6 +178,7 @@ def push_to_github(item, summary_text, categoria):
         "sha": sha
     }
     try:
+        # También usamos requests normal para la API de GitHub
         r = requests.put(url, headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github.v3+json"
@@ -276,9 +279,10 @@ def send_to_telegram(message):
 
 def scrape_rss_feed(url, source_name, limit=5):
     try:
-        # Usamos una sesión para mantener consistencia en los headers
-        session = requests.Session()
-        r = session.get(url, headers=HEADERS, timeout=15)
+        # Usamos el scraper de Cloudflare para TODAS las fuentes RSS
+        r = scraper.get(url, headers=HEADERS, timeout=15)
+        
+        logger.info(f"FETCH {source_name}: Status {r.status_code}")
         
         if r.status_code != 200:
             logger.error(f"RSS Error ({source_name}): Status {r.status_code}")
