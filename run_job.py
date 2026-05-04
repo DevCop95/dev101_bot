@@ -138,7 +138,7 @@ def get_published_links():
         return set()
     return {n.get("enlace_original", "") for n in noticias}
 
-def push_to_github(item, summary_text, categoria):
+def push_to_github(item, titulo, resumen, categoria):
     token = GIT_TOKEN.strip()
     if not token:
         return
@@ -153,15 +153,14 @@ def push_to_github(item, summary_text, categoria):
         return
 
     nuevo_id = (noticias[0]["id"] + 1) if noticias else 1
-    lines = summary_text.split("\n")
     # Usar timezone-aware datetime
     ahora = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nueva = {
         "id": nuevo_id,
         "fecha": ahora,
         "categoria": categoria,
-        "titulo": clean_markdown(lines[0].strip()),
-        "resumen": clean_markdown("\n".join(lines[1:]).strip()),
+        "titulo": titulo,
+        "resumen": resumen,
         "url_imagen": get_image_url(categoria),
         "enlace_original": item["link"],
         "fuente": item["source"]
@@ -238,21 +237,39 @@ def get_image_url(categoria):
 def summarize_news(title, content):
     if not GROQ_API_KEY:
         logger.error("GROQ_API_KEY no configurada")
-        return f"{title}\n(Resumen no disponible)"
+        return None, None
     try:
         r = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. IMPORTANTE: Si la noticia NO trata sobre IA o Ciberseguridad de forma clara, responde ÚNICAMENTE con la palabra 'RECHAZAR'."},
-                {"role": "user", "content": f"Título: {title}\nContenido: {content}"}
+                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. FORMATO DE RESPUESTA: Primera línea el título, segunda línea el resumen. NADA MÁS. Si la noticia NO trata sobre IA o Ciberseguridad de forma clara, responde ÚNICAMENTE con la palabra 'RECHAZAR'."},
+                {"role": "user", "content": f"Título original: {title}\nContenido: {content}"}
             ],
             temperature=0.3,
             max_tokens=150,
         )
-        return r.choices[0].message.content.strip()
+        response = r.choices[0].message.content.strip()
+        
+        if "RECHAZAR" in response.upper():
+            return "RECHAZAR", None
+
+        lines = [l.strip() for l in response.split("\n") if l.strip()]
+        
+        if len(lines) >= 2:
+            return clean_markdown(lines[0]), clean_markdown(" ".join(lines[1:]))
+        
+        # Fallback: Si solo hay una línea, intentar separar por punto o dos puntos
+        text = lines[0]
+        match = re.search(r'[:.!?]\s', text)
+        if match:
+            idx = match.start() + 1
+            return clean_markdown(text[:idx]), clean_markdown(text[idx:])
+            
+        return clean_markdown(text), "" # Aún así devolvemos algo, el job validará si el resumen está vacío
+
     except Exception as e:
         logger.error(f"Groq error: {e}")
-        return f"{title}\n(Resumen no disponible)"
+        return None, None
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
@@ -407,17 +424,21 @@ def job():
         logger.info(f"Procesando: {item['title']}")
         
         # Resumen y filtro de relevancia con Groq
-        summary = summarize_news(item['title'], item.get('content', item['title']))
+        titulo_ai, resumen_ai = summarize_news(item['title'], item.get('content', item['title']))
         
-        if "RECHAZAR" in summary.upper():
+        if titulo_ai == "RECHAZAR":
             logger.info(f"Noticia rechazada por irrelevante: {item['title']}")
             continue
+            
+        if not titulo_ai or not resumen_ai:
+            logger.info(f"Noticia descartada por resumen incompleto: {item['title']}")
+            continue
 
-        categoria = detectar_categoria(item["title"], item["source"])
+        categoria = detectar_categoria(titulo_ai, item["source"])
         
-        final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
+        final_message = f"🚀 *{item['source']}*\n\n*{titulo_ai}*\n\n{resumen_ai}\n\n🔗 [Leer más]({item['link']})"
         send_to_telegram(final_message)
-        push_to_github(item, summary, categoria)
+        push_to_github(item, titulo_ai, resumen_ai, categoria)
         
         count += 1
         time.sleep(3)

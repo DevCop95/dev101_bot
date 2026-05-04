@@ -1,6 +1,7 @@
-requests
-beautifulsoup4
-lxml
-groq
-python-dotenv
-cloudscraper
+requests==2.32.3
+beautifulsoup4==4.12.3
+lxml==6.0.4
+groq==1.2.0
+httpx==0.28.1
+python-dotenv==1.0.1
+cloudscraper==1.2.71

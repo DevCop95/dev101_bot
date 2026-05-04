@@ -99,8 +99,10 @@ dev101_bot/
 |--------|-----------|
 | CyberSecurity News | Ciberseguridad / IA |
 | WeLiveSecurity (ESET) | Ciberseguridad |
-| Xataka | IA |
-| WIRED en Español | IA |
+| DragonJAR | Ciberseguridad |
+| El Lado Del Mal | Ciberseguridad |
+| IA en Español (Substack) | IA |
+| Xataka IA | IA |
 
 ---
 
@@ -111,7 +113,9 @@ requests
 beautifulsoup4
 lxml
 groq
+httpx
 python-dotenv
+cloudscraper
 ```
 
 ---
