@@ -1,6 +1,6 @@
 # run_job.py — Entry point para GitHub Actions
 import os, re, time, logging, json, base64, requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from bs4 import BeautifulSoup
 from groq import Groq
 from dotenv import load_dotenv
@@ -125,7 +125,7 @@ def get_published_links():
         return set()
     return {n.get("enlace_original", "") for n in noticias}
 
-def push_to_github(item, summary_text):
+def push_to_github(item, summary_text, categoria):
     token = GIT_TOKEN.strip()
     if not token:
         return
@@ -133,6 +133,7 @@ def push_to_github(item, summary_text):
     if noticias is None:
         return
 
+    # Evitar duplicados recientes
     ultimas_urls = {n.get("enlace_original", "") for n in noticias[:30]}
     if item["link"] in ultimas_urls:
         logger.info(f"Ya existe en GitHub: {item['title']}")
@@ -140,13 +141,15 @@ def push_to_github(item, summary_text):
 
     nuevo_id = (noticias[0]["id"] + 1) if noticias else 1
     lines = summary_text.split("\n")
+    # Usar timezone-aware datetime
+    ahora = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nueva = {
         "id": nuevo_id,
-        "fecha": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "categoria": detectar_categoria(item["source"]),
+        "fecha": ahora,
+        "categoria": categoria,
         "titulo": clean_markdown(lines[0].strip()),
         "resumen": clean_markdown("\n".join(lines[1:]).strip()),
-        "url_imagen": get_image_url(item["source"]),
+        "url_imagen": get_image_url(categoria),
         "enlace_original": item["link"],
         "fuente": item["source"]
     }
@@ -171,24 +174,33 @@ def push_to_github(item, summary_text):
         logger.info(f"✅ Publicado en GitHub: {nueva['titulo']}")
     except Exception as e:
         logger.error(f"Error push GitHub: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-             logger.error(f"Response: {e.response.text}")
 
-def detectar_categoria(source):
+# ── Logic ─────────────────────────────────────────────────────────────────────
+
+def detectar_categoria(title, source):
+    text = title.lower()
+    ia_keywords = ["ia", "ai", "inteligencia artificial", "llm", "openai", "gpt", "gemini", "nvidia", "machine learning", "deep learning", "robotica", "asml"]
+    security_keywords = ["seguridad", "hacker", "hacking", "malware", "ransomware", "vulnerabilidad", "ciberataque", "ciberseguridad", "brecha", "deepfake", "privacidad", "phishing"]
+    
+    if any(k in text for k in ia_keywords):
+        return "IA"
+    if any(k in text for k in security_keywords):
+        return "Ciberseguridad"
+    
     return {
         "CyberSecurity News": "Ciberseguridad",
         "WeLiveSecurity": "Ciberseguridad",
-        "Impacto TIC": "IA",
-        "WIRED en Español": "IA"
-    }.get(source, "Tech")
+        "DragonJAR": "Ciberseguridad",
+        "El Lado Del Mal": "Ciberseguridad",
+        "IA en Español": "IA"
+    }.get(source, "IA" if "IA" in source else "Ciberseguridad" if "Security" in source else "Tech")
 
-def get_image_url(source):
+def get_image_url(categoria):
     keyword = {
-        "CyberSecurity News": "cybersecurity hacker",
-        "WeLiveSecurity": "cybersecurity malware",
-        "Impacto TIC": "artificial intelligence technology",
-        "WIRED en Español": "future technology digital"
-    }.get(source, "technology")
+        "Ciberseguridad": "cybersecurity hacker",
+        "IA": "artificial intelligence technology",
+        "Tech": "technology digital"
+    }.get(categoria, "technology")
     try:
         r = requests.get(
             "https://api.unsplash.com/photos/random",
@@ -201,12 +213,11 @@ def get_image_url(source):
     except:
         pass
     seeds = {
-        "CyberSecurity News": "cybersec99",
-        "WeLiveSecurity": "security42",
-        "Impacto TIC": "aitech77",
-        "WIRED en Español": "futuretech11"
+        "Ciberseguridad": "cybersec99",
+        "IA": "aitech77",
+        "Tech": "tech01"
     }
-    return f"https://picsum.photos/seed/{seeds.get(source, 'tech01')}/800/450"
+    return f"https://picsum.photos/seed/{seeds.get(categoria, 'tech01')}/800/450"
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
@@ -218,13 +229,13 @@ def summarize_news(title, content):
         r = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. Formato: Titular\nResumen"},
+                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. IMPORTANTE: Si la noticia NO trata sobre IA o Ciberseguridad de forma clara, responde ÚNICAMENTE con la palabra 'RECHAZAR'."},
                 {"role": "user", "content": f"Título: {title}\nContenido: {content}"}
             ],
-            temperature=0.5,
+            temperature=0.3,
             max_tokens=150,
         )
-        return r.choices[0].message.content
+        return r.choices[0].message.content.strip()
     except Exception as e:
         logger.error(f"Groq error: {e}")
         return f"{title}\n(Resumen no disponible)"
@@ -232,7 +243,6 @@ def summarize_news(title, content):
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
 def send_to_telegram(message):
-    # Limpiamos el token por si acaso viene con prefijo 'bot' o espacios
     token = TELEGRAM_TOKEN.strip()
     if token.lower().startswith("bot"):
         token = token[3:]
@@ -253,17 +263,18 @@ def send_to_telegram(message):
 
 # ── RSS Scraper ───────────────────────────────────────────────────────────────
 
-def scrape_rss_feed(url, source_name):
+def scrape_rss_feed(url, source_name, limit=5):
     try:
         r = requests.get(url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         soup = BeautifulSoup(r.text, 'xml')
         
         items = []
-        for entry in soup.find_all('item', limit=10):
+        for entry in soup.find_all('item', limit=limit):
             title = entry.title.text.strip() if entry.title else ""
             link = entry.link.text.strip() if entry.link else ""
             pub_date = entry.pubDate.text.strip() if entry.pubDate else ""
+            description = entry.description.text.strip() if entry.description else ""
             
             if not title or not link:
                 continue
@@ -274,11 +285,10 @@ def scrape_rss_feed(url, source_name):
             items.append({
                 'title': title,
                 'link': link,
-                'source': source_name
+                'source': source_name,
+                'content': description
             })
-            # Solo retornamos la primera noticia válida para mantener consistencia con el flujo actual
-            if items:
-                return items
+        return items
                 
     except Exception as e:
         logger.error(f"RSS Error ({source_name}): {e}")
@@ -286,62 +296,81 @@ def scrape_rss_feed(url, source_name):
 
 # ── Scrapers ──────────────────────────────────────────────────────────────────
 
-BLOCKED_URLS = {
-    "https://cybersecuritynews.es/ciber-insurance-day-22-el-evento-del-ciberseguro-ya-esta-aqui/",
-    "https://cybersecuritynews.es/cyber-insurance-day-22-objetivo-concienciar-informar-sobre-ciberseguros/",
-    "https://cybersecuritynews.es/la-necesidad-de-contar-con-un-ciberseguro/",
-    "https://cybersecuritynews.es/resumen-de-la-jornada-de-puertas-abiertas-en-cybersecurity-news/",
-    "https://cybersecuritynews.es/os-invitamos-a-la-jornada-de-puertas-abiertas-de-cybersecurity-news/",
-    "https://cybersecuritynews.es/codigos-qr-o-sms-riesgos-de-la-vieja-tecnologia-que-la-pandemia-ha-puesto-de-moda-2/",
-    "https://cybersecuritynews.es/cybercoffee-23-con-raquel-ballesteros-responsable-de-desarrollo-de-mercado-en-basque-cybersecurity-centre/",
-    "https://cybersecuritynews.es/cyberwebinar-el-epm-antidoto-contra-sus-infecciones-del-malware/",
-}
-
 def scrape_cybersecurity_news():
-    # RSS de CSN (generalmente incluye IA si es el feed principal o de categoría)
     return scrape_rss_feed("https://cybersecuritynews.es/feed/", "CyberSecurity News")
 
 def scrape_welivesecurity():
     return scrape_rss_feed("https://www.welivesecurity.com/la-es/feed/", "WeLiveSecurity")
 
-def scrape_xataka():
-    # Feed verificado de Xataka (el index reenvía hacia acá)
-    return scrape_rss_feed("https://www.xataka.com/feedburner.xml", "Xataka")
+def scrape_dragonjar():
+    return scrape_rss_feed("https://www.dragonjar.org/feed", "DragonJAR")
 
-def scrape_wired_espanol():
-    # Feed de Wired España (estándar, a veces requiere el trailing slash)
-    return scrape_rss_feed("https://es.wired.com/feed/rss", "WIRED en Español")
+def scrape_el_lado_del_mal():
+    return scrape_rss_feed("http://feeds.feedburner.com/ElLadoDelMal", "El Lado Del Mal")
+
+def scrape_ia_en_espanol():
+    return scrape_rss_feed("https://iaenespanol.substack.com/feed", "IA en Español")
+
+def scrape_xataka_ia():
+    return scrape_rss_feed("https://www.xataka.com/tag/inteligencia-artificial/rss2.xml", "Xataka IA")
+
+def scrape_wired_ia():
+    # Usamos el feed general ya que los de etiquetas son inestables (404/400).
+    # El filtro de Groq se encargará de seleccionar solo lo relevante a IA/Ciber.
+    return scrape_rss_feed("https://es.wired.com/feed", "WIRED en Español")
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def job():
     logger.info("=== Iniciando job ===")
 
-    # Deduplicación usando noticias.json en GitHub (no sent_news.json local)
     published_links = get_published_links()
     logger.info(f"URLs ya publicadas: {len(published_links)}")
 
+    scrapers = [
+        scrape_cybersecurity_news, 
+        scrape_welivesecurity,
+        scrape_dragonjar,
+        scrape_el_lado_del_mal,
+        scrape_ia_en_espanol,
+        scrape_xataka_ia,
+        scrape_wired_ia
+    ]
+
     all_news = []
-    # Hemos sustituido scrape_impacto_tic por scrape_xataka
-    for scraper in [scrape_cybersecurity_news, scrape_welivesecurity,
-                    scrape_xataka, scrape_wired_espanol]:
-        results = scraper()
-        if results:
-            all_news.append(results[0])
+    for scraper_func in scrapers:
+        results = scraper_func()
+        all_news.extend(results)
 
+    # Filtrar por URLs no publicadas
     new_items = [i for i in all_news if i['link'] not in published_links]
-    logger.info(f"Items nuevos: {len(new_items)}")
+    logger.info(f"Items candidatos nuevos: {len(new_items)}")
 
-    for item in new_items[:3]:
+    count = 0
+    for item in new_items:
+        if count >= 3: # Limitar a 3 noticias por run
+            break
+            
         logger.info(f"Procesando: {item['title']}")
+        
+        # Resumen y filtro de relevancia con Groq
         summary = summarize_news(item['title'], item.get('content', item['title']))
+        
+        if "RECHAZAR" in summary.upper():
+            logger.info(f"Noticia rechazada por irrelevante: {item['title']}")
+            continue
+
+        categoria = detectar_categoria(item["title"], item["source"])
+        
         final_message = f"🚀 *{item['source']}*\n\n{summary}\n\n🔗 Leer más: {item['link']}"
         send_to_telegram(final_message)
-        push_to_github(item, summary)
+        push_to_github(item, summary, categoria)
+        
+        count += 1
         time.sleep(3)
 
-    if not new_items:
-        logger.info("Sin noticias nuevas en este run.")
+    if count == 0:
+        logger.info("Sin noticias relevantes nuevas en este run.")
 
 if __name__ == "__main__":
     job()
