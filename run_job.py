@@ -330,7 +330,40 @@ def scrape_el_lado_del_mal():
     return scrape_rss_feed("http://feeds.feedburner.com/ElLadoDelMal", "El Lado Del Mal")
 
 def scrape_ia_en_espanol():
-    return scrape_rss_feed("https://iaenespanol.substack.com/feed", "IA en Español")
+    # Usamos la API de Substack en lugar del RSS para evitar el 403 Forbidden
+    url = "https://iaenespanol.substack.com/api/v1/posts?limit=5&offset=0"
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        logger.info(f"FETCH IA en Español (API): Status {r.status_code}")
+        
+        if r.status_code != 200:
+            return []
+            
+        data = r.json()
+        items = []
+        for post in data:
+            title = post.get("title", "")
+            link = post.get("canonical_url", "")
+            # Substack API usa post_date (ISO 8601)
+            pub_date = post.get("post_date", "")
+            description = post.get("description", "")
+            
+            if not title or not link:
+                continue
+                
+            if pub_date and not is_recent(pub_date):
+                continue
+                
+            items.append({
+                'title': title,
+                'link': link,
+                'source': "IA en Español",
+                'content': description
+            })
+        return items
+    except Exception as e:
+        logger.error(f"API Error (IA en Español): {e}")
+    return []
 
 def scrape_xataka_ia():
     return scrape_rss_feed("https://www.xataka.com/tag/inteligencia-artificial/rss2.xml", "Xataka IA")
