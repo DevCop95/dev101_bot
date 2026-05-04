@@ -276,8 +276,14 @@ def send_to_telegram(message):
 
 def scrape_rss_feed(url, source_name, limit=5):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
-        r.raise_for_status()
+        # Usamos una sesión para mantener consistencia en los headers
+        session = requests.Session()
+        r = session.get(url, headers=HEADERS, timeout=15)
+        
+        if r.status_code != 200:
+            logger.error(f"RSS Error ({source_name}): Status {r.status_code}")
+            return []
+            
         soup = BeautifulSoup(r.text, 'xml')
         
         items = []
