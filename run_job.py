@@ -32,8 +32,11 @@ logger.info("------------------------------------")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
+# User-Agent más realista para evitar bloqueos (403 Forbidden)
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -314,11 +317,6 @@ def scrape_ia_en_espanol():
 def scrape_xataka_ia():
     return scrape_rss_feed("https://www.xataka.com/tag/inteligencia-artificial/rss2.xml", "Xataka IA")
 
-def scrape_wired_ia():
-    # Usamos el feed general ya que los de etiquetas son inestables (404/400).
-    # El filtro de Groq se encargará de seleccionar solo lo relevante a IA/Ciber.
-    return scrape_rss_feed("https://es.wired.com/feed", "WIRED en Español")
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def job():
@@ -333,8 +331,7 @@ def job():
         scrape_dragonjar,
         scrape_el_lado_del_mal,
         scrape_ia_en_espanol,
-        scrape_xataka_ia,
-        scrape_wired_ia
+        scrape_xataka_ia
     ]
 
     all_news = []
