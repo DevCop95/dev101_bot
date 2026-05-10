@@ -192,20 +192,41 @@ def push_to_github(item, titulo, resumen, categoria):
 
 def detectar_categoria(title, source):
     text = title.lower()
-    ia_keywords = ["ia", "ai", "inteligencia artificial", "llm", "openai", "gpt", "gemini", "nvidia", "machine learning", "deep learning", "robotica", "asml"]
-    security_keywords = ["seguridad", "hacker", "hacking", "malware", "ransomware", "vulnerabilidad", "ciberataque", "ciberseguridad", "brecha", "deepfake", "privacidad", "phishing"]
-    
+    # Expanded AI keywords: agents, models, AI companies, frameworks, research orgs
+    ia_keywords = [
+        "ia", "ai", "inteligencia artificial", "llm", "gpt", "claude", "gemini", "openai",
+        "anthropic", "chatgpt", "copilot", "midjourney", "stable diffusion", "dall-e",
+        "machine learning", "deep learning", "neural", "transformer", "modelo de lenguaje",
+        "nvidia", "amd", "chip", "gpu", "tpu", "acelerador", "computacion",
+        "robotica", "robot", "autonomo", "asml", "agente", "rag", "embeddings",
+        "hugging face", "langchain", "pytorch", "tensorflow"
+    ]
+    # Expanded cybersecurity keywords: threats, tools, compliance, incidents
+    security_keywords = [
+        "seguridad", "ciberseguridad", "hacker", "hacking", "malware", "ransomware",
+        "vulnerabilidad", "exploit", "cve-", "zero-day", "0-day", "ciberataque",
+        "brecha", "filtracion", "data breach", "deepfake", "privacidad", "phishing",
+        "spyware", "trojan", "botnet", "ddos", "firewall", "vpn", "cifrado",
+        "encriptacion", "autenticacion", "credential", "password", "contraseña",
+        "backdoor", "rootkit", "apt", "threat", "amenaza", "incidente", "parche",
+        "compliance", "gdpr", "iso 27001", "nist", "soc", "siem", "xdr", "edr"
+    ]
+
     if any(k in text for k in ia_keywords):
         return "IA"
     if any(k in text for k in security_keywords):
         return "Ciberseguridad"
-    
+
     return {
         "CyberSecurity News": "Ciberseguridad",
         "WeLiveSecurity": "Ciberseguridad",
         "DragonJAR": "Ciberseguridad",
         "El Lado Del Mal": "Ciberseguridad",
-        "IA en Español": "IA"
+        "Una al Día (Hispasec)": "Ciberseguridad",
+        "The Hacker News": "Ciberseguridad",
+        "Bleeping Computer": "Ciberseguridad",
+        "IA en Español": "IA",
+        "Xataka IA": "IA"
     }.get(source, "IA" if "IA" in source else "Ciberseguridad" if "Security" in source else "Tech")
 
 def get_image_url(categoria):
@@ -238,11 +259,30 @@ def summarize_news(title, content):
     if not GROQ_API_KEY:
         logger.error("GROQ_API_KEY no configurada")
         return None, None
+
+    # Truncate content to avoid Groq rate limits (max ~10k tokens = ~8000 chars)
+    max_content_length = 8000
+    if len(content) > max_content_length:
+        content = content[:max_content_length] + "..."
+
     try:
         r = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": "Eres un experto en IA y Ciberseguridad. Resume la noticia en un titular impactante y un resumen de máximo 2 frases en español. FORMATO DE RESPUESTA: Primera línea el título, segunda línea el resumen. NADA MÁS. Si la noticia NO trata sobre IA o Ciberseguridad de forma clara, responde ÚNICAMENTE con la palabra 'RECHAZAR'."},
+                {"role": "system", "content": """Eres un filtro experto en IA y Ciberseguridad.
+
+CRITERIOS DE ACEPTACIÓN (noticia debe cumplir AL MENOS uno):
+- IA: Modelos de lenguaje (GPT, Claude, Gemini, LLaMA), empresas AI (OpenAI, Anthropic, Google AI, Meta AI), herramientas AI (ChatGPT, Copilot, Midjourney), hardware AI (NVIDIA GPUs, TPUs, chips especializados), frameworks ML/DL, agentes autónomos, RAG, embeddings.
+- Ciberseguridad: Vulnerabilidades (CVE, exploits, zero-days), malware/ransomware, ataques (phishing, DDoS, APT), brechas de datos, herramientas de seguridad (firewalls, VPN, EDR, SIEM), compliance (GDPR, ISO 27001), incidentes de seguridad, privacidad digital.
+
+RECHAZAR si:
+- Tech genérica (apps, e-commerce, social media sin relación IA/seguridad)
+- Noticias corporativas/financieras sin aspecto técnico
+- Hardware/software general sin enfoque IA o seguridad
+- Tutoriales básicos de programación
+
+Si cumple criterios: responde EN ESPAÑOL con título impactante (primera línea) + resumen de máximo 2 frases (segunda línea). Si el contenido original está en inglés, tradúcelo al español. NADA MÁS.
+Si NO cumple criterios: responde ÚNICAMENTE 'RECHAZAR'."""},
                 {"role": "user", "content": f"Título original: {title}\nContenido: {content}"}
             ],
             temperature=0.3,
@@ -390,6 +430,18 @@ def scrape_ia_en_espanol():
 def scrape_xataka_ia():
     return scrape_rss_feed("https://www.xataka.com/tag/inteligencia-artificial/rss2.xml", "Xataka IA")
 
+def scrape_bleeping_computer():
+    """English source with auto-translate via Groq — top cybersecurity news"""
+    return scrape_rss_feed("https://www.bleepingcomputer.com/feed/", "Bleeping Computer")
+
+def scrape_the_hacker_news():
+    """English source with auto-translate via Groq — breaking security news"""
+    return scrape_rss_feed("https://feeds.feedburner.com/TheHackersNews", "The Hacker News")
+
+def scrape_unaaldia():
+    """Spanish AI/tech news aggregator"""
+    return scrape_rss_feed("https://unaaldia.hispasec.com/feed/", "Una al Día (Hispasec)")
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def job():
@@ -399,10 +451,15 @@ def job():
     logger.info(f"URLs ya publicadas: {len(published_links)}")
 
     scrapers = [
-        scrape_cybersecurity_news, 
+        # Cybersecurity sources
+        scrape_cybersecurity_news,
         scrape_welivesecurity,
         scrape_dragonjar,
         scrape_el_lado_del_mal,
+        scrape_unaaldia,
+        scrape_bleeping_computer,
+        scrape_the_hacker_news,
+        # AI sources
         scrape_ia_en_espanol,
         scrape_xataka_ia
     ]

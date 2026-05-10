@@ -95,14 +95,17 @@ dev101_bot/
 
 ## 📰 Fuentes de noticias
 
-| Fuente | Categoría |
-|--------|-----------|
-| CyberSecurity News | Ciberseguridad / IA |
-| WeLiveSecurity (ESET) | Ciberseguridad |
-| DragonJAR | Ciberseguridad |
-| El Lado Del Mal | Ciberseguridad |
-| IA en Español (Substack) | IA |
-| Xataka IA | IA |
+| Fuente | Categoría | Idioma |
+|--------|-----------|--------|
+| CyberSecurity News | Ciberseguridad / IA | 🇪🇸 |
+| WeLiveSecurity (ESET) | Ciberseguridad | 🇪🇸 |
+| DragonJAR | Ciberseguridad | 🇪🇸 |
+| El Lado Del Mal | Ciberseguridad | 🇪🇸 |
+| Una al Día (Hispasec) | Ciberseguridad | 🇪🇸 |
+| Bleeping Computer | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| The Hacker News | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| IA en Español (Substack) | IA | 🇪🇸 |
+| Xataka IA | IA | 🇪🇸 |
 
 ---
 
