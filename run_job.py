@@ -143,6 +143,35 @@ def get_published_links():
         return set()
     return {n.get("enlace_original", "") for n in noticias}
 
+def calcular_similitud(texto1, texto2):
+    if not texto1 or not texto2:
+        return 0.0
+
+    palabras1 = set(re.findall(r'\b\w+\b', texto1.lower()))
+    palabras2 = set(re.findall(r'\b\w+\b', texto2.lower()))
+
+    stopwords = {"el", "la", "los", "las", "un", "una", "unos", "unas", "y", "o", "de", "en", "a", "que", "por", "para", "con", "del", "al", "se", "es", "su", "como", "sobre"}
+    palabras1 -= stopwords
+    palabras2 -= stopwords
+
+    if not palabras1 or not palabras2:
+        return 0.0
+
+    interseccion = palabras1.intersection(palabras2)
+    jaccard = len(interseccion) / len(palabras1.union(palabras2))
+    overlap = len(interseccion) / min(len(palabras1), len(palabras2))
+
+    return max(jaccard, overlap)
+
+def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.6):
+    texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
+    for noticia in noticias_existentes:
+        texto_existente = f"{noticia.get('titulo', '')} {noticia.get('resumen', '')}"
+        similitud = calcular_similitud(texto_nuevo, texto_existente)
+        if similitud >= umbral:
+            return True, noticia.get('titulo', '')
+    return False, ""
+
 def push_to_github(item, titulo, resumen, categoria):
     token = GIT_TOKEN.strip()
     if not token:
@@ -500,7 +529,12 @@ def scrape_wired_security():
 def job():
     logger.info("=== Iniciando job ===")
 
-    published_links = get_published_links()
+    # Obtener noticias actuales de GitHub y localmente en la ejecución para deduplicación
+    noticias_existentes, _ = get_github_file()
+    if not noticias_existentes:
+        noticias_existentes = []
+
+    published_links = {n.get("enlace_original", "") for n in noticias_existentes}
     logger.info(f"URLs ya publicadas: {len(published_links)}")
 
     scrapers = [
@@ -550,12 +584,25 @@ def job():
             logger.info(f"Noticia descartada por resumen incompleto: {item['title']}")
             continue
 
+        # Filtrar similitud
+        es_similar, titulo_similar = es_noticia_similar(titulo_ai, resumen_ai, noticias_existentes)
+        if es_similar:
+            logger.info(f"Noticia omitida por demasiada similitud con: {titulo_similar}")
+            continue
+
         categoria = detectar_categoria(titulo_ai, item["source"])
         
         final_message = f"🚀 *{item['source']}*\n\n*{titulo_ai}*\n\n{resumen_ai}\n\n🔗 [Leer más]({item['link']})"
         send_to_telegram(final_message)
         push_to_github(item, titulo_ai, resumen_ai, categoria)
         
+        # Añadir al listado en memoria para evitar duplicados en el mismo run
+        noticias_existentes.insert(0, {
+            "titulo": titulo_ai,
+            "resumen": resumen_ai,
+            "enlace_original": item['link']
+        })
+
         count += 1
         time.sleep(3)
 
