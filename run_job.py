@@ -83,7 +83,12 @@ def is_recent(date_str):
         # Intentar formatos comunes + formato RSS (RFC 822)
         for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d', '%a, %d %b %Y %H:%M:%S %z'):
             try:
-                dt = datetime.strptime(clean if fmt != '%a, %d %b %Y %H:%M:%S %z' else date_str, fmt)
+                if fmt == '%a, %d %b %Y %H:%M:%S %z':
+                    # Fix for GMT timezone string issues in some python versions
+                    d_str = date_str.replace('GMT', '+0000').replace('UTC', '+0000')
+                    dt = datetime.strptime(d_str, fmt)
+                else:
+                    dt = datetime.strptime(clean, fmt)
                 # Normalizar a offset-naive para la comparación si es necesario
                 if dt.tzinfo:
                     dt = dt.replace(tzinfo=None)
@@ -225,6 +230,12 @@ def detectar_categoria(title, source):
         "Una al Día (Hispasec)": "Ciberseguridad",
         "The Hacker News": "Ciberseguridad",
         "Bleeping Computer": "Ciberseguridad",
+        "Krebs on Security": "Ciberseguridad",
+        "Dark Reading": "Ciberseguridad",
+        "Schneier on Security": "Ciberseguridad",
+        "SANS ISC": "Ciberseguridad",
+        "The Record": "Ciberseguridad",
+        "Wired Security": "Ciberseguridad",
         "IA en Español": "IA",
         "Xataka IA": "IA"
     }.get(source, "IA" if "IA" in source else "Ciberseguridad" if "Security" in source else "Tech")
@@ -348,11 +359,35 @@ def scrape_rss_feed(url, source_name, limit=5):
         soup = BeautifulSoup(r.text, 'xml')
         
         items = []
-        for entry in soup.find_all('item', limit=limit):
+        entries = soup.find_all('entry', limit=limit)
+        if not entries:
+            entries = soup.find_all('item', limit=limit)
+
+        for entry in entries:
             title = entry.title.text.strip() if entry.title else ""
-            link = entry.link.text.strip() if entry.link else ""
-            pub_date = entry.pubDate.text.strip() if entry.pubDate else ""
+
+            # Extract link (Atom uses <link href="...">, RSS uses <link>...</link>)
+            link = ""
+            link_tag = entry.find('link')
+            if link_tag:
+                if link_tag.has_attr('href'):
+                    link = link_tag['href'].strip()
+                else:
+                    link = link_tag.text.strip()
+
+            # Extract date (Atom uses <published> or <updated>, RSS uses <pubDate>)
+            pub_date = ""
+            if entry.published:
+                pub_date = entry.published.text.strip()
+            elif entry.updated:
+                pub_date = entry.updated.text.strip()
+            elif entry.pubDate:
+                pub_date = entry.pubDate.text.strip()
+
             description = entry.description.text.strip() if entry.description else ""
+            # Fallback for Atom content
+            if not description and entry.content:
+                description = entry.content.text.strip()
             
             if not title or not link:
                 continue
@@ -442,6 +477,24 @@ def scrape_unaaldia():
     """Spanish AI/tech news aggregator"""
     return scrape_rss_feed("https://unaaldia.hispasec.com/feed/", "Una al Día (Hispasec)")
 
+def scrape_krebsonsecurity():
+    return scrape_rss_feed("https://krebsonsecurity.com/feed/", "Krebs on Security")
+
+def scrape_darkreading():
+    return scrape_rss_feed("https://www.darkreading.com/rss.xml", "Dark Reading")
+
+def scrape_schneier():
+    return scrape_rss_feed("https://www.schneier.com/feed/atom/", "Schneier on Security")
+
+def scrape_sans_isc():
+    return scrape_rss_feed("https://isc.sans.edu/rssfeed.xml", "SANS ISC")
+
+def scrape_therecord():
+    return scrape_rss_feed("https://therecord.media/feed", "The Record")
+
+def scrape_wired_security():
+    return scrape_rss_feed("https://www.wired.com/feed/category/security/latest/rss", "Wired Security")
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def job():
@@ -459,6 +512,12 @@ def job():
         scrape_unaaldia,
         scrape_bleeping_computer,
         scrape_the_hacker_news,
+        scrape_krebsonsecurity,
+        scrape_darkreading,
+        scrape_schneier,
+        scrape_sans_isc,
+        scrape_therecord,
+        scrape_wired_security,
         # AI sources
         scrape_ia_en_espanol,
         scrape_xataka_ia

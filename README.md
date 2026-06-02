@@ -104,6 +104,12 @@ dev101_bot/
 | Una al Día (Hispasec) | Ciberseguridad | 🇪🇸 |
 | Bleeping Computer | Ciberseguridad | 🇬🇧 (auto-traducido) |
 | The Hacker News | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Krebs on Security | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Dark Reading | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Schneier on Security | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| SANS ISC | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| The Record | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Wired Security | Ciberseguridad | 🇬🇧 (auto-traducido) |
 | IA en Español (Substack) | IA | 🇪🇸 |
 | Xataka IA | IA | 🇪🇸 |
 
