@@ -23,6 +23,8 @@ tmp/
 test_scrapers.py
 test_run_job.py
 verify_rss.py
+test_local.py
+debug_tags.py
 
 # OS
 .DS_Store

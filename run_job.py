@@ -1,10 +1,10 @@
 # run_job.py — Entry point para GitHub Actions
+# Orquestador principal: recolecta → analiza → enriquece → distribuye
+
 import os, re, time, logging, json, base64, requests
 from datetime import datetime, timedelta, timezone
-from bs4 import BeautifulSoup
 from groq import Groq
 from dotenv import load_dotenv
-import cloudscraper
 
 # Cargar variables de entorno desde .env si existe (local)
 load_dotenv()
@@ -29,75 +29,55 @@ logger = logging.getLogger(__name__)
 # Diagnóstico de variables
 logger.info("--- Diagnóstico de Configuración ---")
 logger.info(f"GIT_TOKEN: {'Configurado' if GIT_TOKEN else 'FALTANTE'}")
+logger.info(f"GROQ_API_KEY: {'Configurado' if GROQ_API_KEY else 'FALTANTE'}")
+logger.info(f"NVD_API_KEY: {'Configurado' if os.getenv('NVD_API_KEY') else 'No configurado (rate limited)'}")
+logger.info(f"GREYNOISE: {'Configurado' if os.getenv('GREYNOISE_API_KEY') else 'No configurado'}")
 logger.info("------------------------------------")
 
 groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
-# Inicializamos el scraper de Cloudflare una sola vez
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    }
+# ── Import modules ────────────────────────────────────────────────────────────
+from sources.rss_feeds import ALL_RSS_SCRAPERS
+from sources.nvd_cve import scrape_nvd_cves
+from sources.exploitdb import scrape_exploitdb, scrape_vulners_recent
+from sources.greynoise import scrape_greynoise_trends
+from sources.telegram_monitor import scrape_telegram_channels
+
+from intelligence.ioc_extractor import extract_iocs, format_iocs_telegram
+from intelligence.mitre_tagger import tag_ttps, format_ttps_telegram
+from intelligence.severity_classifier import (
+    classify_severity, get_severity_emoji, format_severity_telegram
 )
 
-HEADERS = {
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-    'Referer': 'https://www.google.com/',
-}
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def clean_markdown(text):
     return re.sub(r'\*+', '', text).strip()
 
-def is_recent(date_str):
-    if not date_str:
-        return False
+def interleave_by_source(items):
+    """
+    Agrupa los items por su fuente ('source') e intercala sus resultados
+    en formato Round-Robin para maximizar la diversidad de medios en cada ejecución.
+    """
+    from collections import defaultdict, deque
+    by_source = defaultdict(deque)
+    for item in items:
+        by_source[item['source']].append(item)
     
-    # Intentar parseo de texto en español (ej: "30 de abril de 2026")
-    meses = {
-        "enero": "01", "febrero": "02", "marzo": "03", "abril": "04",
-        "mayo": "05", "junio": "06", "julio": "07", "agosto": "08",
-        "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
-    }
-    
-    date_clean = date_str.lower().strip()
-    for mes_nombre, mes_num in meses.items():
-        if mes_nombre in date_clean:
-            try:
-                # Extraer día y año si existen
-                parts = re.findall(r'\d+', date_clean)
-                if len(parts) >= 2:
-                    dia = parts[0].zfill(2)
-                    anio = parts[-1]
-                    dt = datetime.strptime(f"{anio}-{mes_num}-{dia}", "%Y-%m-%d")
-                    return datetime.now() - dt < timedelta(days=2)
-            except:
-                pass
-
-    try:
-        clean = date_str.split('T')[0].strip()
-        # Intentar formatos comunes + formato RSS (RFC 822)
-        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d', '%a, %d %b %Y %H:%M:%S %z'):
-            try:
-                if fmt == '%a, %d %b %Y %H:%M:%S %z':
-                    # Fix for GMT timezone string issues in some python versions
-                    d_str = date_str.replace('GMT', '+0000').replace('UTC', '+0000')
-                    dt = datetime.strptime(d_str, fmt)
-                else:
-                    dt = datetime.strptime(clean, fmt)
-                # Normalizar a offset-naive para la comparación si es necesario
-                if dt.tzinfo:
-                    dt = dt.replace(tzinfo=None)
-                return datetime.now() - dt < timedelta(days=2)
-            except:
-                continue
-    except:
-        pass
-    return False
+    interleaved = []
+    # Seguir intercalando hasta que todos los deques estén vacíos
+    while by_source:
+        to_remove = []
+        for source, queue in list(by_source.items()):
+            if queue:
+                interleaved.append(queue.popleft())
+            if not queue:
+                to_remove.append(source)
+        for source in to_remove:
+            del by_source[source]
+            
+    return interleaved
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
@@ -114,7 +94,6 @@ def get_github_file():
     }
     
     try:
-        # Para la API de GitHub usamos requests normal (no suele tener Cloudflare agresivo para API)
         r = requests.get(url, headers=headers, timeout=10)
         
         if r.status_code == 401:
@@ -172,7 +151,7 @@ def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=
             return True, noticia.get('titulo', '')
     return False, ""
 
-def push_to_github(item, titulo, resumen, categoria):
+def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, iocs=None):
     token = GIT_TOKEN.strip()
     if not token:
         return
@@ -181,26 +160,28 @@ def push_to_github(item, titulo, resumen, categoria):
         return
 
     # Evitar duplicados recientes
-    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:30]}
+    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:50]}
     if item["link"] in ultimas_urls:
         logger.info(f"Ya existe en GitHub: {item['title']}")
         return
 
     nuevo_id = (noticias[0]["id"] + 1) if noticias else 1
-    # Usar timezone-aware datetime
     ahora = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nueva = {
         "id": nuevo_id,
         "fecha": ahora,
         "categoria": categoria,
+        "severidad": severity,
         "titulo": titulo,
         "resumen": resumen,
         "url_imagen": get_image_url(categoria),
         "enlace_original": item["link"],
-        "fuente": item["source"]
+        "fuente": item["source"],
+        "ttps": [{"id": t["id"], "name": t["name"]} for t in (ttps or [])],
+        "iocs": iocs or {},
     }
     noticias.insert(0, nueva)
-    noticias = noticias[:50]
+    noticias = noticias[:100]
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
@@ -211,7 +192,6 @@ def push_to_github(item, titulo, resumen, categoria):
         "sha": sha
     }
     try:
-        # También usamos requests normal para la API de GitHub
         r = requests.put(url, headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github.v3+json"
@@ -265,6 +245,10 @@ def detectar_categoria(title, source):
         "SANS ISC": "Ciberseguridad",
         "The Record": "Ciberseguridad",
         "Wired Security": "Ciberseguridad",
+        "NVD (NIST)": "Ciberseguridad",
+        "Exploit-DB": "Ciberseguridad",
+        "Vulners": "Ciberseguridad",
+        "GreyNoise": "Ciberseguridad",
         "IA en Español": "IA",
         "Xataka IA": "IA"
     }.get(source, "IA" if "IA" in source else "Ciberseguridad" if "Security" in source else "Tech")
@@ -309,7 +293,7 @@ def summarize_news(title, content):
         r = groq_client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "system", "content": """Eres un filtro experto en IA y Ciberseguridad.
+                {"role": "system", "content": """Eres un analista senior de inteligencia de ciberseguridad e IA con 15 años de experiencia en SOCs de nivel 3. Tu estilo es técnico, preciso y directo — como un briefing para un CISO.
 
 CRITERIOS DE ACEPTACIÓN (noticia debe cumplir AL MENOS uno):
 - IA: Modelos de lenguaje (GPT, Claude, Gemini, LLaMA), empresas AI (OpenAI, Anthropic, Google AI, Meta AI), herramientas AI (ChatGPT, Copilot, Midjourney), hardware AI (NVIDIA GPUs, TPUs, chips especializados), frameworks ML/DL, agentes autónomos, RAG, embeddings.
@@ -321,31 +305,56 @@ RECHAZAR si:
 - Hardware/software general sin enfoque IA o seguridad
 - Tutoriales básicos de programación
 
-Si cumple criterios: responde EN ESPAÑOL con título impactante (primera línea) + resumen de máximo 2 frases (segunda línea). Si el contenido original está en inglés, tradúcelo al español. NADA MÁS.
+Si cumple criterios: responde EN ESPAÑOL con este formato exacto:
+TÍTULO: [Título impactante de máximo 80 caracteres, estilo briefing de inteligencia]
+RESUMEN: [Resumen técnico de máximo 2 frases. Incluye impacto real, vectores de ataque si aplica, y contexto relevante. Habla como analista, no como periodista.]
+SECTOR: [Sector afectado: Gobierno, Finanzas, Salud, Tecnología, Telecomunicaciones, Energía, Educación, Todos, N/A]
+
+Si el contenido original está en inglés, tradúcelo al español manteniendo términos técnicos en inglés cuando sea estándar (e.g., zero-day, ransomware, phishing).
+
 Si NO cumple criterios: responde ÚNICAMENTE 'RECHAZAR'."""},
                 {"role": "user", "content": f"Título original: {title}\nContenido: {content}"}
             ],
             temperature=0.3,
-            max_tokens=150,
+            max_tokens=250,
         )
         response = r.choices[0].message.content.strip()
         
         if "RECHAZAR" in response.upper():
             return "RECHAZAR", None
 
-        lines = [l.strip() for l in response.split("\n") if l.strip()]
+        # Parse structured response
+        titulo_ai = ""
+        resumen_ai = ""
+        sector = ""
         
-        if len(lines) >= 2:
-            return clean_markdown(lines[0]), clean_markdown(" ".join(lines[1:]))
+        for line in response.split("\n"):
+            line = line.strip()
+            if line.upper().startswith("TÍTULO:") or line.upper().startswith("TITULO:"):
+                titulo_ai = clean_markdown(line.split(":", 1)[1].strip())
+            elif line.upper().startswith("RESUMEN:"):
+                resumen_ai = clean_markdown(line.split(":", 1)[1].strip())
+            elif line.upper().startswith("SECTOR:"):
+                sector = line.split(":", 1)[1].strip()
         
-        # Fallback: Si solo hay una línea, intentar separar por punto o dos puntos
-        text = lines[0]
-        match = re.search(r'[:.!?]\s', text)
-        if match:
-            idx = match.start() + 1
-            return clean_markdown(text[:idx]), clean_markdown(text[idx:])
-            
-        return clean_markdown(text), "" # Aún así devolvemos algo, el job validará si el resumen está vacío
+        # Fallback: old format (2 lines)
+        if not titulo_ai or not resumen_ai:
+            lines = [l.strip() for l in response.split("\n") if l.strip()]
+            if len(lines) >= 2:
+                titulo_ai = titulo_ai or clean_markdown(lines[0])
+                resumen_ai = resumen_ai or clean_markdown(" ".join(lines[1:]))
+            elif lines:
+                text = lines[0]
+                match = re.search(r'[:.!?]\s', text)
+                if match:
+                    idx = match.start() + 1
+                    titulo_ai = titulo_ai or clean_markdown(text[:idx])
+                    resumen_ai = resumen_ai or clean_markdown(text[idx:])
+                else:
+                    titulo_ai = titulo_ai or clean_markdown(text)
+                    resumen_ai = resumen_ai or ""
+        
+        return titulo_ai, resumen_ai
 
     except Exception as e:
         logger.error(f"Groq error: {e}")
@@ -372,164 +381,12 @@ def send_to_telegram(message):
     except Exception as e:
         logger.error(f"Error Telegram: {e}")
 
-# ── RSS Scraper ───────────────────────────────────────────────────────────────
-
-def scrape_rss_feed(url, source_name, limit=5):
-    try:
-        # Usamos el scraper de Cloudflare para TODAS las fuentes RSS
-        r = scraper.get(url, headers=HEADERS, timeout=15)
-        
-        logger.info(f"FETCH {source_name}: Status {r.status_code}")
-        
-        if r.status_code != 200:
-            logger.error(f"RSS Error ({source_name}): Status {r.status_code}")
-            return []
-            
-        soup = BeautifulSoup(r.text, 'xml')
-        
-        items = []
-        entries = soup.find_all('entry', limit=limit)
-        if not entries:
-            entries = soup.find_all('item', limit=limit)
-
-        for entry in entries:
-            title = entry.title.text.strip() if entry.title else ""
-
-            # Extract link (Atom uses <link href="...">, RSS uses <link>...</link>)
-            link = ""
-            link_tag = entry.find('link')
-            if link_tag:
-                if link_tag.has_attr('href'):
-                    link = link_tag['href'].strip()
-                else:
-                    link = link_tag.text.strip()
-
-            # Extract date (Atom uses <published> or <updated>, RSS uses <pubDate>)
-            pub_date = ""
-            if entry.published:
-                pub_date = entry.published.text.strip()
-            elif entry.updated:
-                pub_date = entry.updated.text.strip()
-            elif entry.pubDate:
-                pub_date = entry.pubDate.text.strip()
-
-            description = entry.description.text.strip() if entry.description else ""
-            # Fallback for Atom content
-            if not description and entry.content:
-                description = entry.content.text.strip()
-            
-            if not title or not link:
-                continue
-                
-            if pub_date and not is_recent(pub_date):
-                continue
-                
-            items.append({
-                'title': title,
-                'link': link,
-                'source': source_name,
-                'content': description
-            })
-        return items
-                
-    except Exception as e:
-        logger.error(f"RSS Error ({source_name}): {e}")
-    return []
-
-# ── Scrapers ──────────────────────────────────────────────────────────────────
-
-def scrape_cybersecurity_news():
-    return scrape_rss_feed("https://cybersecuritynews.es/feed/", "CyberSecurity News")
-
-def scrape_welivesecurity():
-    return scrape_rss_feed("https://www.welivesecurity.com/la-es/feed/", "WeLiveSecurity")
-
-def scrape_dragonjar():
-    return scrape_rss_feed("https://www.dragonjar.org/feed", "DragonJAR")
-
-def scrape_el_lado_del_mal():
-    return scrape_rss_feed("http://feeds.feedburner.com/ElLadoDelMal", "El Lado Del Mal")
-
-def scrape_ia_en_espanol():
-    # Usamos RSS2JSON como puente definitivo. Este servicio procesa el feed en sus servidores
-    # y nos lo entrega ya convertido, saltándose cualquier bloqueo de IP de GitHub.
-    rss_url = "https://iaenespanol.substack.com/feed"
-    api_url = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
-    
-    try:
-        r = requests.get(api_url, timeout=15)
-        logger.info(f"FETCH IA en Español (RSS2JSON): Status {r.status_code}")
-        
-        if r.status_code != 200:
-            return []
-            
-        data = r.json()
-        if data.get("status") != "ok":
-            return []
-            
-        items = []
-        for entry in data.get("items", []):
-            title = entry.get("title", "")
-            link = entry.get("link", "")
-            pub_date = entry.get("pubDate", "")
-            description = entry.get("description", "")
-            
-            if not title or not link:
-                continue
-                
-            if pub_date and not is_recent(pub_date):
-                continue
-                
-            items.append({
-                'title': title,
-                'link': link,
-                'source': "IA en Español",
-                'content': description
-            })
-        return items
-    except Exception as e:
-        logger.error(f"RSS2JSON Error (IA en Español): {e}")
-    return []
-
-def scrape_xataka_ia():
-    return scrape_rss_feed("https://www.xataka.com/tag/inteligencia-artificial/rss2.xml", "Xataka IA")
-
-def scrape_bleeping_computer():
-    """English source with auto-translate via Groq — top cybersecurity news"""
-    return scrape_rss_feed("https://www.bleepingcomputer.com/feed/", "Bleeping Computer")
-
-def scrape_the_hacker_news():
-    """English source with auto-translate via Groq — breaking security news"""
-    return scrape_rss_feed("https://feeds.feedburner.com/TheHackersNews", "The Hacker News")
-
-def scrape_unaaldia():
-    """Spanish AI/tech news aggregator"""
-    return scrape_rss_feed("https://unaaldia.hispasec.com/feed/", "Una al Día (Hispasec)")
-
-def scrape_krebsonsecurity():
-    return scrape_rss_feed("https://krebsonsecurity.com/feed/", "Krebs on Security")
-
-def scrape_darkreading():
-    return scrape_rss_feed("https://www.darkreading.com/rss.xml", "Dark Reading")
-
-def scrape_schneier():
-    return scrape_rss_feed("https://www.schneier.com/feed/atom/", "Schneier on Security")
-
-def scrape_sans_isc():
-    return scrape_rss_feed("https://isc.sans.edu/rssfeed.xml", "SANS ISC")
-
-def scrape_therecord():
-    return scrape_rss_feed("https://therecord.media/feed", "The Record")
-
-def scrape_wired_security():
-    return scrape_rss_feed("https://www.wired.com/feed/category/security/latest/rss", "Wired Security")
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def job():
     logger.info("=== Iniciando job ===")
 
-    # Obtener noticias actuales de GitHub y localmente en la ejecución para deduplicación
+    # Obtener noticias actuales de GitHub para deduplicación
     noticias_existentes, _ = get_github_file()
     if not noticias_existentes:
         noticias_existentes = []
@@ -537,43 +394,79 @@ def job():
     published_links = {n.get("enlace_original", "") for n in noticias_existentes}
     logger.info(f"URLs ya publicadas: {len(published_links)}")
 
-    scrapers = [
-        # Cybersecurity sources
-        scrape_cybersecurity_news,
-        scrape_welivesecurity,
-        scrape_dragonjar,
-        scrape_el_lado_del_mal,
-        scrape_unaaldia,
-        scrape_bleeping_computer,
-        scrape_the_hacker_news,
-        scrape_krebsonsecurity,
-        scrape_darkreading,
-        scrape_schneier,
-        scrape_sans_isc,
-        scrape_therecord,
-        scrape_wired_security,
-        # AI sources
-        scrape_ia_en_espanol,
-        scrape_xataka_ia
-    ]
-
+    # ── FASE 1: Recolección de todas las fuentes ──────────────────────────────
+    logger.info("--- Fase 1: Recolección de fuentes ---")
+    
     all_news = []
-    for scraper_func in scrapers:
-        results = scraper_func()
-        all_news.extend(results)
+    
+    # RSS feeds (fuentes originales)
+    for scraper_func in ALL_RSS_SCRAPERS:
+        try:
+            results = scraper_func()
+            all_news.extend(results)
+        except Exception as e:
+            logger.error(f"Scraper error: {e}")
+    
+    # NVD CVE API
+    try:
+        cve_items = scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=5)
+        all_news.extend(cve_items)
+        logger.info(f"NVD: {len(cve_items)} CVEs añadidos")
+    except Exception as e:
+        logger.error(f"NVD Error: {e}")
+    
+    # Exploit-DB RSS
+    try:
+        exploitdb_items = scrape_exploitdb()
+        all_news.extend(exploitdb_items)
+        logger.info(f"Exploit-DB: {len(exploitdb_items)} items añadidos")
+    except Exception as e:
+        logger.error(f"Exploit-DB Error: {e}")
+    
+    # Vulners API
+    try:
+        vulners_items = scrape_vulners_recent(limit=3)
+        all_news.extend(vulners_items)
+        logger.info(f"Vulners: {len(vulners_items)} items añadidos")
+    except Exception as e:
+        logger.error(f"Vulners Error: {e}")
+    
+    # GreyNoise
+    try:
+        greynoise_items = scrape_greynoise_trends()
+        all_news.extend(greynoise_items)
+        logger.info(f"GreyNoise: {len(greynoise_items)} items añadidos")
+    except Exception as e:
+        logger.error(f"GreyNoise Error: {e}")
+    
+    # Telegram Channels
+    try:
+        telegram_items = scrape_telegram_channels()
+        all_news.extend(telegram_items)
+        logger.info(f"Telegram Channels: {len(telegram_items)} items añadidos")
+    except Exception as e:
+        logger.error(f"Telegram Monitor Error: {e}")
+    
+    logger.info(f"Total items recolectados: {len(all_news)}")
 
     # Filtrar por URLs no publicadas
     new_items = [i for i in all_news if i['link'] not in published_links]
     logger.info(f"Items candidatos nuevos: {len(new_items)}")
 
+    # Intercalar por fuente (Round-Robin) para maximizar la diversidad de medios
+    new_items = interleave_by_source(new_items)
+
+    # ── FASE 2 + 3: Procesamiento con IA + Distribución ──────────────────────
+    logger.info("--- Fase 2+3: Análisis IA + Distribución ---")
+    
     count = 0
     for item in new_items:
-        if count >= 3: # Limitar a 3 noticias por run
+        if count >= 5:  # Aumentado de 3 a 5 (más fuentes = más candidatos)
             break
             
         logger.info(f"Procesando: {item['title']}")
         
-        # Resumen y filtro de relevancia con Groq
+        # ── Resumen y filtro de relevancia con Groq ───────────────────────────
         titulo_ai, resumen_ai = summarize_news(item['title'], item.get('content', item['title']))
         
         if titulo_ai == "RECHAZAR":
@@ -592,9 +485,58 @@ def job():
 
         categoria = detectar_categoria(titulo_ai, item["source"])
         
-        final_message = f"🚀 *{item['source']}*\n\n*{titulo_ai}*\n\n{resumen_ai}\n\n🔗 [Leer más]({item['link']})"
+        # ── Enriquecimiento de inteligencia ───────────────────────────────────
+        
+        # Extraer IoCs
+        full_text = f"{item['title']} {item.get('content', '')} {titulo_ai} {resumen_ai}"
+        iocs = extract_iocs(full_text)
+        iocs_text = format_iocs_telegram(iocs)
+        
+        # Clasificar TTPs MITRE
+        ttps = tag_ttps(titulo_ai, resumen_ai)
+        ttps_text = format_ttps_telegram(ttps)
+        
+        # Clasificar severidad
+        cvss_score = item.get('cvss_score')
+        severity = classify_severity(titulo_ai, resumen_ai, cvss_score=cvss_score, iocs=iocs)
+        severity_emoji = get_severity_emoji(severity)
+        severity_text = format_severity_telegram(severity)
+        
+        # ── Construir mensaje de Telegram enriquecido ─────────────────────────
+        msg_parts = [
+            f"{severity_emoji} *{item['source']}*",
+            f"\n*{titulo_ai}*",
+            f"\n{resumen_ai}",
+        ]
+        
+        # Añadir severidad
+        msg_parts.append(f"\n{severity_text}")
+        
+        # Añadir TTPs si existen
+        if ttps_text:
+            msg_parts.append(f"\n📋 *MITRE ATT&CK:*\n{ttps_text}")
+        
+        # Añadir IoCs si existen
+        if iocs_text:
+            msg_parts.append(f"\n🔍 *IoCs:*\n{iocs_text}")
+        
+        msg_parts.append(f"\n🔗 [Leer más]({item['link']})")
+        
+        final_message = "\n".join(msg_parts)
+        
+        # ── Distribución ──────────────────────────────────────────────────────
+        
+        # Telegram
         send_to_telegram(final_message)
-        push_to_github(item, titulo_ai, resumen_ai, categoria)
+        
+        
+        # GitHub
+        push_to_github(
+            item, titulo_ai, resumen_ai, categoria,
+            severity=severity,
+            ttps=ttps,
+            iocs=iocs,
+        )
         
         # Añadir al listado en memoria para evitar duplicados en el mismo run
         noticias_existentes.insert(0, {
@@ -608,6 +550,8 @@ def job():
 
     if count == 0:
         logger.info("Sin noticias relevantes nuevas en este run.")
+    else:
+        logger.info(f"=== Job completado: {count} noticias publicadas ===")
 
 if __name__ == "__main__":
     job()

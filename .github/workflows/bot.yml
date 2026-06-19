@@ -23,9 +23,11 @@ jobs:
 
       - name: Run bot
         env:
-          TELEGRAM_TOKEN:      ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID:    ${{ secrets.TELEGRAM_CHAT_ID }}
-          UNSPLASH_ACCESS_KEY: ${{ secrets.UNSPLASH_ACCESS_KEY }}
-          GROQ_API_KEY:        ${{ secrets.GROQ_API_KEY }}
-          GIT_TOKEN:           ${{ secrets.GIT_TOKEN }}
+          TELEGRAM_TOKEN:          ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID:        ${{ secrets.TELEGRAM_CHAT_ID }}
+          UNSPLASH_ACCESS_KEY:     ${{ secrets.UNSPLASH_ACCESS_KEY }}
+          GROQ_API_KEY:            ${{ secrets.GROQ_API_KEY }}
+          GIT_TOKEN:               ${{ secrets.GIT_TOKEN }}
+          NVD_API_KEY:             ${{ secrets.NVD_API_KEY }}
+          GREYNOISE_API_KEY:       ${{ secrets.GREYNOISE_API_KEY }}
         run: python run_job.py

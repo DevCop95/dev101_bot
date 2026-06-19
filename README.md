@@ -1,6 +1,6 @@
 # 🤖 dev101_bot
 
-> Bot de Telegram que envía noticias de Ciberseguridad e IA directamente a tu chat, funcionando 24/7 mediante GitHub Actions y Cloudflare Workers.
+> Plataforma de inteligencia de Ciberseguridad e IA que recolecta, analiza y distribuye noticias automáticamente vía Telegram. Funciona 24/7 mediante GitHub Actions y Cloudflare Workers.
 
 ---
 
@@ -13,20 +13,37 @@
                                   └─────────────────────┘                  └────────┬─────────┘
                                                                                     │
                                                                            ┌────────▼─────────┐
-                                                                           │  scraping + IA   │
-                                                                           │  (Groq LLaMA 3.3)│
+                                                                           │  RECOLECCIÓN     │
+                                                                           │  RSS + APIs +    │
+                                                                           │  Telegram Chans  │
+                                                                           └────────┬─────────┘
+                                                                                    │
+                                                                           ┌────────▼─────────┐
+                                                                           │  INTELIGENCIA    │
+                                                                           │  Groq LLaMA 3.3  │
+                                                                           │  MITRE ATT&CK    │
+                                                                           │  IoC Extraction  │
+                                                                           │  Severity Class. │
                                                                            └────────┬─────────┘
                                                                                     │
                                   ┌─────────────────────┐     guarda datos   ┌──────▼──────────┐
-                                  │ Repo: cYHBernews    │ ◄────────────────  │ noticias.json   │
-                                  └─────────────────────┘                    └─────────────────┘
+                                  │ Repo: cYHBernews    │ ◄────────────────  │ DISTRIBUCIÓN    │
+                                  └─────────────────────┘                    │ Telegram        │
+                                          ▲                                  └─────────────────┘
+                                          │
+                                  ┌───────┴───────┐
+                                  │ noticias.json │
+                                  │ + TTPs + IoCs │
+                                  └───────────────┘
 ```
 
 ### Componentes
 
-1. **GitHub Actions** (`.github/workflows/bot.yml`): El motor del bot. Se ejecuta automáticamente cada 3 horas o manualmente vía webhook. Realiza el scraping (RSS), resume con IA y envía a Telegram.
-2. **Cloudflare Workers** (`api/webhook.js`): El receptor. Recibe mensajes de Telegram y dispara el Action de GitHub cuando se usa `/noticias`.
-3. **Repositorio externo** (`DevCop95/cYHBernews`): El historial. Las noticias se guardan en `noticias.json` para deduplicación y persistencia.
+1. **GitHub Actions** (`.github/workflows/bot.yml`): Motor del bot. Se ejecuta cada 3 horas o manualmente. Recolecta → Analiza → Distribuye.
+2. **Cloudflare Workers** (`api/webhook.js`): Receptor de Telegram. Dispara el Action vía `/noticias`.
+3. **Sources** (`sources/`): Módulos de recolección — RSS, NVD CVE API, Exploit-DB, Vulners, GreyNoise, canales de Telegram.
+4. **Intelligence** (`intelligence/`): Análisis avanzado — clasificación MITRE ATT&CK, extracción de IoCs, clasificación de severidad.
+5. **Persistencia** (`DevCop95/cYHBernews`): Persistencia en `noticias.json` con TTPs, IoCs y severidad.
 
 ---
 
@@ -34,7 +51,7 @@
 
 ### 1. GitHub Secrets
 
-Ve a **Settings > Secrets and variables > Actions** en este repositorio y configura:
+Ve a **Settings > Secrets and variables > Actions** en este repositorio:
 
 | Secreto | Descripción |
 |---------|-------------|
@@ -42,7 +59,9 @@ Ve a **Settings > Secrets and variables > Actions** en este repositorio y config
 | `TELEGRAM_TOKEN` | Token del bot obtenido con @BotFather |
 | `TELEGRAM_CHAT_ID` | Tu ID de Telegram (obtenido con @userinfobot) |
 | `GROQ_API_KEY` | API Key de [console.groq.com](https://console.groq.com/) |
-| `UNSPLASH_ACCESS_KEY` | (Opcional) Para imágenes aleatorias en las noticias |
+| `UNSPLASH_ACCESS_KEY` | (Opcional) Para imágenes aleatorias |
+| `NVD_API_KEY` | (Opcional) API Key de NVD para mejor rate limit |
+| `GREYNOISE_API_KEY` | (Opcional) API Key de GreyNoise Community |
 
 ### 2. Cloudflare Workers — Variables de entorno
 
@@ -56,8 +75,6 @@ En tu dashboard de Cloudflare Workers > tu worker > **Settings > Variables and S
 
 ### 3. Registrar el Webhook en Telegram
 
-Ejecuta una sola vez en el navegador o con curl:
-
 ```
 https://api.telegram.org/bot<TU_TOKEN>/setWebhook?url=https://dev101_bot.dev101-bot.workers.dev
 ```
@@ -68,10 +85,10 @@ https://api.telegram.org/bot<TU_TOKEN>/setWebhook?url=https://dev101_bot.dev101-
 
 | Comando | Descripción |
 |---------|-------------|
-| `/noticias` | Fuerza la búsqueda y envío de noticias al instante |
-| `/help` | Muestra los comandos disponibles |
+| `/noticias` | Fuerza búsqueda y envío de noticias |
+| `/help` | Muestra comandos disponibles |
 
-El bot también envía noticias automáticamente **cada 3 horas** vía cron en GitHub Actions.
+Envío automático **cada 3 horas** vía cron en GitHub Actions.
 
 ---
 
@@ -79,21 +96,29 @@ El bot también envía noticias automáticamente **cada 3 horas** vía cron en G
 
 ```
 dev101_bot/
-├── .github/
-│   └── workflows/
-│       └── bot.yml          # Workflow de GitHub Actions (cron + dispatch)
-├── api/
-│   └── webhook.js           # Cloudflare Worker — recibe mensajes de Telegram
-├── run_job.py               # Script principal — scraping, IA y publicación
-├── requirements.txt         # Dependencias Python
-├── wrangler.toml            # Config de Cloudflare Workers
-├── .env.example             # Plantilla de variables de entorno
-└── .gitignore
+├── .github/workflows/bot.yml      # GitHub Actions (cron + dispatch)
+├── api/webhook.js                  # Cloudflare Worker — Telegram webhook
+├── sources/                        # Módulos de recolección
+│   ├── rss_feeds.py                # 15 fuentes RSS (ES + EN)
+│   ├── nvd_cve.py                  # NVD CVE API 2.0 (NIST)
+│   ├── exploitdb.py                # Exploit-DB RSS + Vulners API
+│   ├── greynoise.py                # GreyNoise Community API
+│   └── telegram_monitor.py         # Canales de Telegram via RSS bridge
+├── intelligence/                   # Análisis de inteligencia
+│   ├── mitre_tagger.py             # Clasificación MITRE ATT&CK (Groq)
+│   ├── ioc_extractor.py            # Extracción de IoCs (regex + STIX)
+│   └── severity_classifier.py     # Clasificación de severidad
+├── run_job.py                      # Orquestador principal
+├── requirements.txt
+├── wrangler.toml
+└── .env.example
 ```
 
 ---
 
 ## 📰 Fuentes de noticias
+
+### RSS Feeds
 
 | Fuente | Categoría | Idioma |
 |--------|-----------|--------|
@@ -112,6 +137,41 @@ dev101_bot/
 | Wired Security | Ciberseguridad | 🇬🇧 (auto-traducido) |
 | IA en Español (Substack) | IA | 🇪🇸 |
 | Xataka IA | IA | 🇪🇸 |
+
+### APIs de Inteligencia
+
+| Fuente | Tipo | Costo |
+|--------|------|-------|
+| NVD CVE API 2.0 | Vulnerabilidades (CVSS ≥ 7.0) | Gratuita |
+| Exploit-DB RSS | Exploits públicos | Gratuita |
+| Vulners API | Vulnerabilidades + exploits | Gratuita |
+| GreyNoise Community | IPs maliciosas trending | Gratuita |
+
+### Canales de Telegram
+
+| Canal | Temática |
+|-------|----------|
+| Threat Intel (Shakirov) | Inteligencia de amenazas |
+| Ransomware News | Grupos de ransomware |
+| Daily Dark Web | Dark web monitoring |
+| Exploit.in | Exploits y vulnerabilidades |
+| CyberWarfare Feed | APT tracking |
+
+---
+
+## 🧠 Pipeline de Inteligencia
+
+Cada noticia pasa por este pipeline:
+
+1. **Recolección** → RSS, APIs, Telegram channels
+2. **Filtro de relevancia** → Groq LLaMA 3.3 (acepta/rechaza)
+3. **Resumen IA** → Estilo analista CTI senior
+4. **Extracción IoCs** → Regex: IPs, dominios, hashes, CVEs → formato STIX 2.1
+5. **Clasificación MITRE** → TTPs con IDs validados (T1566, T1486, etc.)
+6. **Severidad** → 🔴 Crítica / 🟠 Alta / 🟡 Media / 🟢 Baja / 🔵 Info
+7. **Deduplicación** → Similitud Jaccard + URLs ya publicadas
+8. **Distribución** → Telegram
+9. **Persistencia** → GitHub `noticias.json` con todos los campos
 
 ---
 
