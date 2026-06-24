@@ -142,9 +142,10 @@ def calcular_similitud(texto1, texto2):
 
     return max(jaccard, overlap)
 
-def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.6):
+def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.45):
     texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
-    for noticia in noticias_existentes:
+    # Revisar las ultimas 50 noticias para ser mas rigurosos con duplicados
+    for noticia in noticias_existentes[:50]:
         texto_existente = f"{noticia.get('titulo', '')} {noticia.get('resumen', '')}"
         similitud = calcular_similitud(texto_nuevo, texto_existente)
         if similitud >= umbral:
@@ -160,7 +161,7 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
         return
 
     # Evitar duplicados recientes
-    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:200]}
+    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:500]}
     if item["link"] in ultimas_urls:
         logger.info(f"Ya existe en GitHub: {item['title']}")
         return
@@ -184,7 +185,7 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
         "iocs": iocs or {},
     }
     noticias.insert(0, nueva)
-    noticias = noticias[:200]
+    noticias = noticias[:500]
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
