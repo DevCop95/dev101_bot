@@ -160,7 +160,7 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
         return
 
     # Evitar duplicados recientes
-    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:50]}
+    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:200]}
     if item["link"] in ultimas_urls:
         logger.info(f"Ya existe en GitHub: {item['title']}")
         return
@@ -181,7 +181,7 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
         "iocs": iocs or {},
     }
     noticias.insert(0, nueva)
-    noticias = noticias[:100]
+    noticias = noticias[:200]
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
