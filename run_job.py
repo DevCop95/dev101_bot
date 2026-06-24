@@ -167,6 +167,9 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
 
     nuevo_id = (noticias[0]["id"] + 1) if noticias else 1
     ahora = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    used_images = [n.get("url_imagen", "") for n in noticias[:20]]
+    used_images = [img for img in used_images if img]
+
     nueva = {
         "id": nuevo_id,
         "fecha": ahora,
@@ -174,7 +177,7 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
         "severidad": severity,
         "titulo": titulo,
         "resumen": resumen,
-        "url_imagen": get_image_url(categoria),
+        "url_imagen": get_image_url(categoria, used_images),
         "enlace_original": item["link"],
         "fuente": item["source"],
         "ttps": [{"id": t["id"], "name": t["name"]} for t in (ttps or [])],
@@ -253,29 +256,40 @@ def detectar_categoria(title, source):
         "Xataka IA": "IA"
     }.get(source, "IA" if "IA" in source else "Ciberseguridad" if "Security" in source else "Tech")
 
-def get_image_url(categoria):
+def get_image_url(categoria, used_images=None):
+    if used_images is None:
+        used_images = []
+
     keyword = {
         "Ciberseguridad": "cybersecurity hacker",
         "IA": "artificial intelligence technology",
         "Tech": "technology digital"
     }.get(categoria, "technology")
-    try:
-        r = requests.get(
-            "https://api.unsplash.com/photos/random",
-            params={"query": keyword, "orientation": "landscape"},
-            headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
-            timeout=5
-        )
-        if r.ok:
-            return r.json()["urls"]["regular"]
-    except:
-        pass
+
+    for _ in range(5):
+        try:
+            r = requests.get(
+                "https://api.unsplash.com/photos/random",
+                params={"query": keyword, "orientation": "landscape"},
+                headers={"Authorization": f"Client-ID {UNSPLASH_ACCESS_KEY}"},
+                timeout=5
+            )
+            if r.ok:
+                url = r.json()["urls"]["regular"]
+                base_url = url.split("?")[0]
+                if not any(base_url in used_url for used_url in used_images):
+                    return url
+        except:
+            pass
+
+    import random
     seeds = {
-        "Ciberseguridad": "cybersec99",
-        "IA": "aitech77",
-        "Tech": "tech01"
+        "Ciberseguridad": ["cybersec99", "cybersec100", "cybersec101", "cybersec102", "cybersec103"],
+        "IA": ["aitech77", "aitech78", "aitech79", "aitech80", "aitech81"],
+        "Tech": ["tech01", "tech02", "tech03", "tech04", "tech05"]
     }
-    return f"https://picsum.photos/seed/{seeds.get(categoria, 'tech01')}/800/450"
+    random_seed = random.choice(seeds.get(categoria, seeds["Tech"]))
+    return f"https://picsum.photos/seed/{random_seed}/800/450"
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
