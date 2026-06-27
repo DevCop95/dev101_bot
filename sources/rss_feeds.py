@@ -27,8 +27,8 @@ HEADERS = {
 }
 
 
-def is_recent(date_str):
-    """Verifica si una fecha es de las últimas 48 horas."""
+def is_recent(date_str, max_age_days=2):
+    """Verifica si una fecha está dentro de los últimos `max_age_days` días."""
     if not date_str:
         return False
     
@@ -47,7 +47,7 @@ def is_recent(date_str):
                     dia = parts[0].zfill(2)
                     anio = parts[-1]
                     dt = datetime.strptime(f"{anio}-{mes_num}-{dia}", "%Y-%m-%d")
-                    return datetime.now() - dt < timedelta(days=2)
+                    return datetime.now() - dt < timedelta(days=max_age_days)
             except:
                 pass
 
@@ -64,7 +64,7 @@ def is_recent(date_str):
                     dt = datetime.strptime(clean, fmt)
                 if dt.tzinfo:
                     dt = dt.replace(tzinfo=None)
-                return datetime.now() - dt < timedelta(days=2)
+                return datetime.now() - dt < timedelta(days=max_age_days)
             except:
                 continue
     except:
@@ -72,19 +72,22 @@ def is_recent(date_str):
     return False
 
 
-def scrape_rss_feed(url, source_name, limit=5):
+def scrape_rss_feed(url, source_name, limit=5, max_age_days=2):
     """Scraper genérico de RSS/Atom feeds."""
     try:
         r = scraper.get(url, headers=HEADERS, timeout=15)
         logger.info(f"FETCH {source_name}: Status {r.status_code}")
-        
+
         if r.status_code != 200:
             logger.error(f"RSS Error ({source_name}): Status {r.status_code}")
             # Fallback to RSS2JSON
             logger.info(f"Intentando fallback RSS2JSON para {source_name}...")
             return scrape_rss2json(url, f"{source_name} (Fallback)")
-            
-        soup = BeautifulSoup(r.text, 'xml')
+
+        # Pasar bytes crudos (r.content) en vez de r.text: deja que el parser XML
+        # detecte el encoding declarado en el propio feed y evita el mojibake
+        # (UTF-8 decodificado como latin-1 → "â€™") cuando el feed no envía charset.
+        soup = BeautifulSoup(r.content, 'xml')
         
         items = []
         entries = soup.find_all('entry', limit=limit)
@@ -122,9 +125,9 @@ def scrape_rss_feed(url, source_name, limit=5):
             if not title or not link:
                 continue
                 
-            if pub_date and not is_recent(pub_date):
+            if pub_date and not is_recent(pub_date, max_age_days=max_age_days):
                 continue
-                
+
             items.append({
                 'title': title,
                 'link': link,
@@ -132,13 +135,13 @@ def scrape_rss_feed(url, source_name, limit=5):
                 'content': description
             })
         return items
-                
+
     except Exception as e:
         logger.error(f"RSS Error ({source_name}): {e}")
     return []
 
 
-def scrape_rss2json(rss_url, source_name):
+def scrape_rss2json(rss_url, source_name, max_age_days=2):
     """Scraper que usa RSS2JSON como puente para feeds bloqueados."""
     api_url = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
     try:

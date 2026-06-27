@@ -3,6 +3,7 @@
 # API gratuita — API key opcional para mejor rate limit
 
 import os
+import time
 import logging
 import requests
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,26 @@ logger = logging.getLogger(__name__)
 
 NVD_API_KEY = os.getenv("NVD_API_KEY", "")
 NVD_BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+
+# Sin API key el rate limit de NIST es 5 req/30s y la API responde lenta;
+# con reintentos + timeout amplio evitamos que un timeout puntual tire la fuente.
+NVD_TIMEOUT = 45
+NVD_MAX_RETRIES = 3
+
+
+def _nvd_get(params, headers):
+    """GET a la NVD con reintentos y backoff exponencial. Devuelve Response o None."""
+    last_exc = None
+    for attempt in range(1, NVD_MAX_RETRIES + 1):
+        try:
+            return requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=NVD_TIMEOUT)
+        except requests.exceptions.RequestException as e:
+            last_exc = e
+            wait = 2 ** attempt  # 2s, 4s, 8s
+            logger.warning(f"NVD intento {attempt}/{NVD_MAX_RETRIES} falló ({e}). Reintentando en {wait}s...")
+            time.sleep(wait)
+    logger.error(f"NVD: agotados {NVD_MAX_RETRIES} reintentos. Último error: {last_exc}")
+    return None
 
 
 def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10):
@@ -34,14 +55,18 @@ def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10):
             headers["apiKey"] = NVD_API_KEY
         
         logger.info("FETCH NVD CVE API...")
-        r = requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=30)
-        
+        r = _nvd_get(params, headers)
+        if r is None:
+            return []
+
         if r.status_code == 403:
             logger.warning("NVD API rate limited. Intentando sin filtro de severidad...")
             # Fallback: buscar sin filtro de severidad
             params.pop("cvssV3Severity", None)
-            r = requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=30)
-        
+            r = _nvd_get(params, headers)
+            if r is None:
+                return []
+
         if r.status_code != 200:
             logger.error(f"NVD API Error: Status {r.status_code}")
             return []

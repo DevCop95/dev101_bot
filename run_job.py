@@ -39,7 +39,7 @@ groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 # ── Import modules ────────────────────────────────────────────────────────────
 from sources.rss_feeds import ALL_RSS_SCRAPERS
 from sources.nvd_cve import scrape_nvd_cves
-from sources.exploitdb import scrape_exploitdb, scrape_vulners_recent
+from sources.exploitdb import scrape_exploitdb  # scrape_vulners_recent desactivado (API anónima descontinuada: 403)
 from sources.greynoise import scrape_greynoise_trends
 from sources.telegram_monitor import scrape_telegram_channels
 
@@ -438,14 +438,9 @@ def job():
     except Exception as e:
         logger.error(f"Exploit-DB Error: {e}")
     
-    # Vulners API
-    try:
-        vulners_items = scrape_vulners_recent(limit=3)
-        all_news.extend(vulners_items)
-        logger.info(f"Vulners: {len(vulners_items)} items añadidos")
-    except Exception as e:
-        logger.error(f"Vulners Error: {e}")
-    
+    # Vulners API — DESACTIVADO: la API anónima fue descontinuada (devuelve 403).
+    # NVD + Exploit-DB ya cubren CVEs/exploits recientes. Reactivar requiere VULNERS_API_KEY.
+
     # GreyNoise
     try:
         greynoise_items = scrape_greynoise_trends()
