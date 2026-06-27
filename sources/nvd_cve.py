@@ -34,13 +34,13 @@ def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10):
             headers["apiKey"] = NVD_API_KEY
         
         logger.info("FETCH NVD CVE API...")
-        r = requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=20)
+        r = requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=30)
         
         if r.status_code == 403:
             logger.warning("NVD API rate limited. Intentando sin filtro de severidad...")
             # Fallback: buscar sin filtro de severidad
             params.pop("cvssV3Severity", None)
-            r = requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=20)
+            r = requests.get(NVD_BASE_URL, params=params, headers=headers, timeout=30)
         
         if r.status_code != 200:
             logger.error(f"NVD API Error: Status {r.status_code}")
