@@ -476,7 +476,7 @@ def job():
     
     count = 0
     for item in new_items:
-        if count >= 5:  # Aumentado de 3 a 5 (más fuentes = más candidatos)
+        if count >= 10:  # Aumentado de 3 a 5 a 10 (más fuentes = más candidatos)
             break
             
         logger.info(f"Procesando: {item['title']}")

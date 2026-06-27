@@ -53,11 +53,13 @@ def is_recent(date_str):
 
     try:
         clean = date_str.split('T')[0].strip()
-        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d', '%a, %d %b %Y %H:%M:%S %z'):
+        for fmt in ('%Y-%m-%d', '%d/%m/%Y', '%Y/%m/%d', '%a, %d %b %Y %H:%M:%S %z', '%Y-%m-%d %H:%M:%S'):
             try:
                 if fmt == '%a, %d %b %Y %H:%M:%S %z':
                     d_str = date_str.replace('GMT', '+0000').replace('UTC', '+0000')
                     dt = datetime.strptime(d_str, fmt)
+                elif fmt == '%Y-%m-%d %H:%M:%S':
+                    dt = datetime.strptime(date_str, fmt)
                 else:
                     dt = datetime.strptime(clean, fmt)
                 if dt.tzinfo:
@@ -78,7 +80,9 @@ def scrape_rss_feed(url, source_name, limit=5):
         
         if r.status_code != 200:
             logger.error(f"RSS Error ({source_name}): Status {r.status_code}")
-            return []
+            # Fallback to RSS2JSON
+            logger.info(f"Intentando fallback RSS2JSON para {source_name}...")
+            return scrape_rss2json(url, f"{source_name} (Fallback)")
             
         soup = BeautifulSoup(r.text, 'xml')
         
@@ -86,6 +90,12 @@ def scrape_rss_feed(url, source_name, limit=5):
         entries = soup.find_all('entry', limit=limit)
         if not entries:
             entries = soup.find_all('item', limit=limit)
+
+        # Some feeds use different capitalization or namespaces
+        if not entries:
+            entries = soup.find_all(re.compile('^entry$', re.IGNORECASE), limit=limit)
+        if not entries:
+            entries = soup.find_all(re.compile('^item$', re.IGNORECASE), limit=limit)
 
         for entry in entries:
             title = entry.title.text.strip() if entry.title else ""
