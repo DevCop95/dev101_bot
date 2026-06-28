@@ -72,7 +72,7 @@ def is_recent(date_str, max_age_days=2):
     return False
 
 
-def scrape_rss_feed(url, source_name, limit=5, max_age_days=2):
+def scrape_rss_feed(url, source_name, limit=5, max_age_days=3):
     """Scraper genérico de RSS/Atom feeds."""
     try:
         r = scraper.get(url, headers=HEADERS, timeout=15)
@@ -141,7 +141,7 @@ def scrape_rss_feed(url, source_name, limit=5, max_age_days=2):
     return []
 
 
-def scrape_rss2json(rss_url, source_name, max_age_days=2):
+def scrape_rss2json(rss_url, source_name, max_age_days=3):
     """Scraper que usa RSS2JSON como puente para feeds bloqueados."""
     api_url = f"https://api.rss2json.com/v1/api.json?rss_url={rss_url}"
     try:
@@ -165,9 +165,9 @@ def scrape_rss2json(rss_url, source_name, max_age_days=2):
             if not title or not link:
                 continue
                 
-            if pub_date and not is_recent(pub_date):
+            if pub_date and not is_recent(pub_date, max_age_days=max_age_days):
                 continue
-                
+
             items.append({
                 'title': title,
                 'link': link,

@@ -82,38 +82,56 @@ def interleave_by_source(items):
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
 def get_github_file():
+    """Lee noticias.json de GitHub con reintentos.
+
+    Contrato (importante para la deduplicación):
+      - Devuelve (list, sha)  → lectura correcta (la lista puede estar vacía).
+      - Devuelve ([], None)   → el archivo no existe todavía (404, primer run legítimo).
+      - Devuelve (None, None) → FALLO real (sin token / 401 / red / JSON corrupto).
+                                El llamador DEBE abortar: tratarlo como "vacío"
+                                republicaría todo el historial.
+    """
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     token = GIT_TOKEN.strip()
-    
+
     if not token:
+        logger.error("GIT_TOKEN no configurado: no se puede leer noticias.json")
         return None, None
 
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json"
     }
-    
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        
-        if r.status_code == 401:
-            logger.error(f"Error 401: El token no es válido o no tiene permisos para {GITHUB_REPO}")
-            return None, None
-        elif r.status_code == 404:
-            logger.info(f"Archivo {GITHUB_FILE} no encontrado. Se creará uno nuevo.")
-            return [], None
-            
-        r.raise_for_status()
-        data = r.json()
-        content = data.get("content", "")
-        if not content:
-            return [], data.get("sha")
-            
-        raw = base64.b64decode(content).decode("utf-8").strip()
-        return json.loads(raw) if raw else [], data["sha"]
-    except Exception as e:
-        logger.error(f"Error leyendo noticias.json en GitHub: {e}")
-        return None, None
+
+    GITHUB_MAX_RETRIES = 3
+    last_error = None
+    for attempt in range(1, GITHUB_MAX_RETRIES + 1):
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+
+            if r.status_code == 401:
+                logger.error(f"Error 401: El token no es válido o no tiene permisos para {GITHUB_REPO}")
+                return None, None  # error de auth: no tiene sentido reintentar
+            elif r.status_code == 404:
+                logger.info(f"Archivo {GITHUB_FILE} no encontrado. Se creará uno nuevo.")
+                return [], None
+
+            r.raise_for_status()
+            data = r.json()
+            content = data.get("content", "")
+            if not content:
+                return [], data.get("sha")
+
+            raw = base64.b64decode(content).decode("utf-8").strip()
+            return json.loads(raw) if raw else [], data["sha"]
+        except Exception as e:
+            last_error = e
+            wait = 2 ** attempt  # 2s, 4s, 8s
+            logger.warning(f"GitHub lectura intento {attempt}/{GITHUB_MAX_RETRIES} falló ({e}). Reintentando en {wait}s...")
+            time.sleep(wait)
+
+    logger.error(f"Error leyendo noticias.json en GitHub tras {GITHUB_MAX_RETRIES} intentos: {last_error}")
+    return None, None
 
 def get_published_links():
     """Devuelve el set de URLs ya publicadas en noticias.json — sirve como deduplicación."""
@@ -142,36 +160,98 @@ def calcular_similitud(texto1, texto2):
 
     return max(jaccard, overlap)
 
-def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.45):
+def _extraer_entidades_tecnicas(texto):
+    """Extrae CVE IDs y nombres de producto/tecnología relevantes para comparación exacta."""
+    texto = texto.lower()
+    cves = set(re.findall(r'cve-\d{4}-\d+', texto))
+    # Palabras técnicas significativas de 4+ letras que no son stopwords
+    stopwords_extra = {
+        "para", "como", "este", "esta", "con", "por", "que", "los", "las",
+        "una", "unos", "unas", "del", "desde", "hasta", "sobre", "entre",
+        "vulnerabilidad", "critica", "critico", "ataque", "exploit", "sistema",
+        "through", "allows", "remote", "local", "code", "execution", "arbitrary"
+    }
+    palabras = set(re.findall(r'\b[a-z][a-z0-9_\-]{3,}\b', texto))
+    palabras -= stopwords_extra
+    return cves, palabras
+
+def clave_contenido(titulo_original, contenido=""):
+    """Genera una clave de deduplicación estable a partir del contenido ORIGINAL
+    (antes del resumen IA, que es no determinista).
+
+    La clave combina:
+      - los CVE-IDs presentes (señal exacta y fuerte), o
+      - el título original normalizado (sin emojis, puntuación ni espacios extra).
+
+    Así, la misma historia desde fuentes/URLs distintas colapsa a la misma clave.
+    """
+    texto = f"{titulo_original} {contenido}".lower()
+    cves = sorted(set(re.findall(r'cve-\d{4}-\d+', texto)))
+    if cves:
+        return "cve:" + ",".join(cves)
+
+    # Normalizar título: solo letras/números/espacios, colapsar espacios
+    norm = re.sub(r'[^a-z0-9áéíóúñ ]', ' ', titulo_original.lower())
+    norm = re.sub(r'\s+', ' ', norm).strip()
+    if not norm:
+        return ""
+    return "txt:" + norm
+
+# Agrupación por MEDIO (no por source): varios canales de Telegram cuentan como
+# un solo medio "Telegram" para que no acaparen todos los slots del run.
+MEDIO_CAPS = {
+    "Telegram": 3,
+    "Exploit-DB": 2,
+    "NVD (NIST)": 2,
+    "GreyNoise": 1,
+    "Vulners": 2,
+}
+MEDIO_CAP_DEFAULT = 2  # cada outlet RSS individual
+
+def medio_de_fuente(source):
+    """Mapea un 'source' a su 'medio' para aplicar cuotas de diversidad."""
+    if source.startswith("TG:"):
+        return "Telegram"
+    # Limpiar el sufijo de fallback "(Fallback)" que añade scrape_rss2json
+    return source.replace(" (Fallback)", "").strip()
+
+def cap_para_medio(medio):
+    return MEDIO_CAPS.get(medio, MEDIO_CAP_DEFAULT)
+
+def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.35):
     texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
-    # Revisar las ultimas 50 noticias para ser mas rigurosos con duplicados
-    for noticia in noticias_existentes[:50]:
+    cves_nuevo, entidades_nuevo = _extraer_entidades_tecnicas(texto_nuevo)
+    # Revisar las ultimas 100 noticias
+    for noticia in noticias_existentes[:100]:
         texto_existente = f"{noticia.get('titulo', '')} {noticia.get('resumen', '')}"
+        # Chequeo 1: similitud por palabras
         similitud = calcular_similitud(texto_nuevo, texto_existente)
         if similitud >= umbral:
             return True, noticia.get('titulo', '')
+        # Chequeo 2: mismo CVE = siempre duplicado
+        if cves_nuevo:
+            _, entidades_existente = _extraer_entidades_tecnicas(texto_existente)
+            cves_existente = set(re.findall(r'cve-\d{4}-\d+', texto_existente.lower()))
+            if cves_nuevo & cves_existente:
+                return True, noticia.get('titulo', '')
+            # Chequeo 3: misma entidad técnica + alta superposición de contexto
+            entidades_comunes = entidades_nuevo & entidades_existente
+            if len(entidades_comunes) >= 3 and similitud >= 0.25:
+                return True, noticia.get('titulo', '')
     return False, ""
 
-def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, iocs=None):
-    token = GIT_TOKEN.strip()
-    if not token:
-        return
-    noticias, sha = get_github_file()
-    if noticias is None:
-        return
+def build_noticia(item, titulo, resumen, categoria, noticias_actuales,
+                  severity="", ttps=None, iocs=None, dedup_key=""):
+    """Construye el dict de una noticia nueva en memoria (sin tocar la red).
 
-    # Evitar duplicados recientes
-    ultimas_urls = {n.get("enlace_original", "") for n in noticias[:500]}
-    if item["link"] in ultimas_urls:
-        logger.info(f"Ya existe en GitHub: {item['title']}")
-        return
-
-    nuevo_id = (noticias[0]["id"] + 1) if noticias else 1
+    `noticias_actuales` se usa para asignar id incremental y evitar reusar imágenes.
+    """
+    nuevo_id = (max((n.get("id", 0) for n in noticias_actuales), default=0) + 1)
     ahora = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    used_images = [n.get("url_imagen", "") for n in noticias[:20]]
+    used_images = [n.get("url_imagen", "") for n in noticias_actuales[:20]]
     used_images = [img for img in used_images if img]
 
-    nueva = {
+    return {
         "id": nuevo_id,
         "fecha": ahora,
         "categoria": categoria,
@@ -181,30 +261,40 @@ def push_to_github(item, titulo, resumen, categoria, severity="", ttps=None, ioc
         "url_imagen": get_image_url(categoria, used_images),
         "enlace_original": item["link"],
         "fuente": item["source"],
+        "dedup_key": dedup_key,
         "ttps": [{"id": t["id"], "name": t["name"]} for t in (ttps or [])],
         "iocs": iocs or {},
     }
-    noticias.insert(0, nueva)
-    noticias = noticias[:500]
 
+def commit_noticias(noticias, sha, nuevas=0):
+    """Escribe noticias.json en GitHub en un ÚNICO commit por run."""
+    token = GIT_TOKEN.strip()
+    if not token:
+        logger.error("GIT_TOKEN no configurado: no se puede commitear noticias.json")
+        return False
+
+    noticias = noticias[:500]
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
-        "message": f"feat: add news - {nueva['titulo'][:60]}",
+        "message": f"feat: add {nuevas} news items ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)",
         "content": base64.b64encode(
             json.dumps(noticias, ensure_ascii=False, indent=2).encode()
         ).decode(),
-        "sha": sha
     }
+    if sha:  # omitir sha solo si el archivo no existía (404)
+        payload["sha"] = sha
+
     try:
         r = requests.put(url, headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github.v3+json"
-        }, json=payload, timeout=10)
-
+        }, json=payload, timeout=15)
         r.raise_for_status()
-        logger.info(f"✅ Publicado en GitHub: {nueva['titulo']}")
+        logger.info(f"✅ noticias.json actualizado en GitHub ({len(noticias)} items totales)")
+        return True
     except Exception as e:
-        logger.error(f"Error push GitHub: {e}")
+        logger.error(f"Error commit GitHub: {e}")
+        return False
 
 # ── Logic ─────────────────────────────────────────────────────────────────────
 
@@ -401,13 +491,22 @@ def send_to_telegram(message):
 def job():
     logger.info("=== Iniciando job ===")
 
-    # Obtener noticias actuales de GitHub para deduplicación
-    noticias_existentes, _ = get_github_file()
-    if not noticias_existentes:
-        noticias_existentes = []
+    # Obtener noticias actuales de GitHub para deduplicación.
+    # IMPORTANTE: si la lectura FALLA (None), abortamos. Tratarlo como historial
+    # vacío republicaría todo (causa del incidente de duplicados tipo YAMCS).
+    noticias_existentes, sha = get_github_file()
+    if noticias_existentes is None:
+        logger.error("No se pudo leer noticias.json (fallo de red/auth). "
+                     "Abortando el run para NO republicar duplicados.")
+        return
 
+    # Estructuras de deduplicación (3 capas)
     published_links = {n.get("enlace_original", "") for n in noticias_existentes}
-    logger.info(f"URLs ya publicadas: {len(published_links)}")
+    claves_publicadas = {n.get("dedup_key", "") for n in noticias_existentes if n.get("dedup_key")}
+    logger.info(f"URLs ya publicadas: {len(published_links)} | claves de contenido: {len(claves_publicadas)}")
+
+    # Copia de trabajo que se commiteará UNA sola vez al final
+    noticias_actualizadas = list(noticias_existentes)
 
     # ── FASE 1: Recolección de todas las fuentes ──────────────────────────────
     logger.info("--- Fase 1: Recolección de fuentes ---")
@@ -459,41 +558,77 @@ def job():
     
     logger.info(f"Total items recolectados: {len(all_news)}")
 
-    # Filtrar por URLs no publicadas
-    new_items = [i for i in all_news if i['link'] not in published_links]
-    logger.info(f"Items candidatos nuevos: {len(new_items)}")
+    # ── Pre-filtro de duplicados (barato, antes de gastar llamadas a la IA) ────
+    # Capa 1: URL ya publicada.  Capa 2: clave de contenido (mismo CVE / mismo
+    # título original) — colapsa la misma historia llegada desde fuentes distintas,
+    # tanto contra el historial como entre sí dentro de este mismo run.
+    new_items = []
+    claves_vistas_run = set()
+    descartados_url = 0
+    descartados_clave = 0
+    for i in all_news:
+        if i['link'] in published_links:
+            descartados_url += 1
+            continue
+        clave = clave_contenido(i.get('title', ''), i.get('content', ''))
+        if clave and (clave in claves_publicadas or clave in claves_vistas_run):
+            descartados_clave += 1
+            continue
+        if clave:
+            claves_vistas_run.add(clave)
+        new_items.append(i)
+
+    logger.info(f"Items candidatos nuevos: {len(new_items)} "
+                f"(descartados: {descartados_url} por URL, {descartados_clave} por clave de contenido)")
 
     # Intercalar por fuente (Round-Robin) para maximizar la diversidad de medios
     new_items = interleave_by_source(new_items)
 
     # ── FASE 2 + 3: Procesamiento con IA + Distribución ──────────────────────
     logger.info("--- Fase 2+3: Análisis IA + Distribución ---")
-    
+
+    MAX_NOTICIAS = 10
     count = 0
+    medio_counts = {}      # cuántas publicadas por medio (Telegram, Exploit-DB, outlet...)
+    # Métricas de descarte para el resumen del run
+    drop_stats = {"cap_medio": 0, "ia_rechazo": 0, "resumen_incompleto": 0, "similar": 0}
+
     for item in new_items:
-        if count >= 10:  # Aumentado de 3 a 5 a 10 (más fuentes = más candidatos)
+        if count >= MAX_NOTICIAS:
             break
-            
-        logger.info(f"Procesando: {item['title']}")
-        
+
+        source = item['source']
+        medio = medio_de_fuente(source)
+        cap = cap_para_medio(medio)
+        if medio_counts.get(medio, 0) >= cap:
+            drop_stats["cap_medio"] += 1
+            logger.info(f"[Diversidad] Saltando '{item['title'][:50]}' — medio '{medio}' ya alcanzó su cuota ({cap})")
+            continue
+
+        logger.info(f"Procesando [{medio}] {item['title']}")
+
         # ── Resumen y filtro de relevancia con Groq ───────────────────────────
         titulo_ai, resumen_ai = summarize_news(item['title'], item.get('content', item['title']))
-        
+
         if titulo_ai == "RECHAZAR":
+            drop_stats["ia_rechazo"] += 1
             logger.info(f"Noticia rechazada por irrelevante: {item['title']}")
             continue
-            
+
         if not titulo_ai or not resumen_ai:
+            drop_stats["resumen_incompleto"] += 1
             logger.info(f"Noticia descartada por resumen incompleto: {item['title']}")
             continue
 
-        # Filtrar similitud
-        es_similar, titulo_similar = es_noticia_similar(titulo_ai, resumen_ai, noticias_existentes)
+        # Filtrar similitud (capa 3: semántica, sobre el título ya resumido)
+        es_similar, titulo_similar = es_noticia_similar(titulo_ai, resumen_ai, noticias_actualizadas)
         if es_similar:
+            drop_stats["similar"] += 1
             logger.info(f"Noticia omitida por demasiada similitud con: {titulo_similar}")
             continue
 
         categoria = detectar_categoria(titulo_ai, item["source"])
+        dedup_key = clave_contenido(item.get('title', ''), item.get('content', ''))
         
         # ── Enriquecimiento de inteligencia ───────────────────────────────────
         
@@ -535,33 +670,36 @@ def job():
         final_message = "\n".join(msg_parts)
         
         # ── Distribución ──────────────────────────────────────────────────────
-        
+
         # Telegram
         send_to_telegram(final_message)
-        
-        
-        # GitHub
-        push_to_github(
-            item, titulo_ai, resumen_ai, categoria,
-            severity=severity,
-            ttps=ttps,
-            iocs=iocs,
-        )
-        
-        # Añadir al listado en memoria para evitar duplicados en el mismo run
-        noticias_existentes.insert(0, {
-            "titulo": titulo_ai,
-            "resumen": resumen_ai,
-            "enlace_original": item['link']
-        })
 
+        # GitHub: construir en memoria, commitear UNA vez al final del run
+        nueva = build_noticia(
+            item, titulo_ai, resumen_ai, categoria, noticias_actualizadas,
+            severity=severity, ttps=ttps, iocs=iocs, dedup_key=dedup_key,
+        )
+        noticias_actualizadas.insert(0, nueva)
+
+        # Actualizar estructuras de dedup en memoria para el resto del run
+        published_links.add(item['link'])
+        if dedup_key:
+            claves_publicadas.add(dedup_key)
+
+        medio_counts[medio] = medio_counts.get(medio, 0) + 1
         count += 1
         time.sleep(3)
 
+    # ── Commit único + resumen del run ────────────────────────────────────────
     if count == 0:
         logger.info("Sin noticias relevantes nuevas en este run.")
-    else:
-        logger.info(f"=== Job completado: {count} noticias publicadas ===")
+        logger.info(f"=== Resumen descartes: {drop_stats} ===")
+        return
+
+    commit_noticias(noticias_actualizadas, sha, nuevas=count)
+    logger.info("=== Job completado ===")
+    logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)}")
+    logger.info(f"Descartes: {drop_stats}")
 
 if __name__ == "__main__":
     job()
