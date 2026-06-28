@@ -240,6 +240,89 @@ def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=
                 return True, noticia.get('titulo', '')
     return False, ""
 
+# ── Deduplicación retroactiva de alta confianza ───────────────────────────────
+# Limpia duplicados que ya se colaron en noticias.json (misma historia desde
+# URLs/fuentes distintas con títulos reformulados por la IA, p.ej. SmartLoader).
+# Conserva la noticia MÁS RECIENTE y elimina las más antiguas.
+
+_STOPWORDS_DEDUP = {
+    "el", "la", "los", "las", "un", "una", "unos", "unas", "y", "o", "de", "en",
+    "a", "que", "por", "para", "con", "del", "al", "se", "es", "su", "como", "sobre", "le",
+}
+# Palabras NO distintivas: comunes en titulares de seguridad/IA. Una entidad
+# distintiva es un token de 4+ letras que NO está aquí (nombre de producto,
+# malware, vendor, etc.). Sirve para no fusionar historias distintas que solo
+# comparten una palabra genérica.
+_PALABRAS_GENERICAS = _STOPWORDS_DEDUP | {
+    "vulnerabilidad", "vulnerabilidades", "ataque", "ataques", "malware", "ransomware",
+    "campana", "codigo", "exploit", "exploits", "nuevo", "nueva", "nuevos", "nuevas",
+    "alerta", "alertas", "amenaza", "amenazas", "seguridad", "ciberseguridad", "ciberataque",
+    "hacker", "hackers", "grupo", "critico", "critica", "critical", "brecha", "brechas",
+    "datos", "fuga", "filtracion", "leak", "robo", "robos", "zero", "day", "parche",
+    "parches", "actualizacion", "error", "fallo", "fallos", "riesgo", "urgente",
+    "detectado", "descubierto", "analisis", "informe", "transforma", "evita", "usan",
+    "usa", "utiliza", "utilizan", "despliega", "lanza", "lanzan", "sufre", "expone",
+    "exposicion", "phishing", "spyware", "troyano", "backdoor", "botnet", "firewall",
+    "firewalls", "server", "servidor", "software", "hardware", "sistema", "sistemas",
+    "aplicacion", "app", "apps", "millones", "miles", "pese", "contra", "mediante",
+    "traves", "cadena", "suministro", "operacion",
+}
+
+def _norm_dedup(texto):
+    """minúsculas + sin acentos (para comparar entidades de forma estable)."""
+    mapa = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n"}
+    return re.sub(r"[áéíóúñ]", lambda m: mapa[m.group()], texto.lower())
+
+def _tokens_dedup(texto):
+    return set(re.findall(r'\b\w+\b', _norm_dedup(texto))) - _STOPWORDS_DEDUP
+
+def _entidades_distintivas(titulo):
+    """Tokens de 4+ letras que NO son palabras genéricas (nombres propios/productos)."""
+    return {w for w in _tokens_dedup(titulo) if len(w) >= 4 and w not in _PALABRAS_GENERICAS}
+
+def _jaccard_titulos(t1, t2):
+    a, b = _tokens_dedup(t1), _tokens_dedup(t2)
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+def _cves_de(texto):
+    return set(re.findall(r'cve-\d{4}-\d+', texto.lower()))
+
+def son_duplicadas(n1, n2):
+    """True si dos noticias son la MISMA historia (alta confianza, pocos falsos +).
+
+    Señales (con veto de CVE para no fusionar vulnerabilidades distintas):
+      - VETO: ambas tienen CVEs y son disjuntos → NUNCA es duplicado.
+      - mismo CVE → duplicado.
+      - títulos casi idénticos (Jaccard ≥ 0.85) → duplicado.
+      - Jaccard ≥ 0.6 Y mismas entidades distintivas → duplicado.
+    """
+    t1, t2 = n1.get("titulo", ""), n2.get("titulo", "")
+    c1 = _cves_de(f"{t1} {n1.get('resumen','')}")
+    c2 = _cves_de(f"{t2} {n2.get('resumen','')}")
+    if c1 and c2:
+        return bool(c1 & c2)  # mismo CVE = sí; CVEs distintos = no (veto)
+    j = _jaccard_titulos(t1, t2)
+    if j >= 0.85:
+        return True
+    e1, e2 = _entidades_distintivas(t1), _entidades_distintivas(t2)
+    if j >= 0.6 and e1 and e1 == e2:
+        return True
+    return False
+
+def deduplicar_noticias(noticias):
+    """Recorre la lista (orden newest-first) y elimina las noticias MÁS ANTIGUAS
+    que sean duplicado de una más reciente ya conservada.
+
+    Devuelve (lista_limpia, eliminadas).
+    """
+    kept, eliminadas = [], []
+    for n in noticias:
+        if any(son_duplicadas(n, k) for k in kept):
+            eliminadas.append(n)
+        else:
+            kept.append(n)
+    return kept, eliminadas
+
 def build_noticia(item, titulo, resumen, categoria, noticias_actuales,
                   severity="", ttps=None, iocs=None, dedup_key=""):
     """Construye el dict de una noticia nueva en memoria (sin tocar la red).
@@ -690,15 +773,22 @@ def job():
         count += 1
         time.sleep(3)
 
+    # ── Dedup retroactivo ─────────────────────────────────────────────────────
+    # Limpia duplicados de alta confianza que se hayan colado en el historial
+    # (misma historia con título reformulado por la IA, mismo CVE, etc.).
+    noticias_actualizadas, dups = deduplicar_noticias(noticias_actualizadas)
+    for dn in dups:
+        logger.info(f"[Dedup retro] eliminada id{dn.get('id')} — {dn.get('titulo')!r} ({dn.get('fuente')})")
+
     # ── Commit único + resumen del run ────────────────────────────────────────
-    if count == 0:
-        logger.info("Sin noticias relevantes nuevas en este run.")
+    if count == 0 and not dups:
+        logger.info("Sin noticias nuevas ni duplicados que limpiar.")
         logger.info(f"=== Resumen descartes: {drop_stats} ===")
         return
 
     commit_noticias(noticias_actualizadas, sha, nuevas=count)
     logger.info("=== Job completado ===")
-    logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)}")
+    logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)} | dups eliminados: {len(dups)}")
     logger.info(f"Descartes: {drop_stats}")
 
 if __name__ == "__main__":
