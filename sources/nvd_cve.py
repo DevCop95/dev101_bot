@@ -59,6 +59,15 @@ def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10):
         if r is None:
             return []
 
+        # Una API key inválida hace que NVD devuelva 404. En vez de perder la
+        # fuente, reintentamos en modo anónimo (funciona, solo con peor rate limit).
+        if r.status_code == 404 and "apiKey" in headers:
+            logger.warning("NVD 404 con API key (¿key inválida?). Reintentando sin key (anónimo)...")
+            headers.pop("apiKey", None)
+            r = _nvd_get(params, headers)
+            if r is None:
+                return []
+
         if r.status_code == 403:
             logger.warning("NVD API rate limited. Intentando sin filtro de severidad...")
             # Fallback: buscar sin filtro de severidad
