@@ -200,13 +200,27 @@ def clave_contenido(titulo_original, contenido=""):
 # Agrupación por MEDIO (no por source): varios canales de Telegram cuentan como
 # un solo medio "Telegram" para que no acaparen todos los slots del run.
 MEDIO_CAPS = {
-    "Telegram": 3,
+    "Telegram": 2,
     "Exploit-DB": 2,
     "NVD (NIST)": 2,
     "GreyNoise": 1,
     "Vulners": 2,
 }
 MEDIO_CAP_DEFAULT = 2  # cada outlet RSS individual
+
+# ── Diversidad dinámica por ejecución (run) ─────────────────────────────────────
+# El cap absoluto de arriba no basta: los runs reales publican ~5 noticias (no 10),
+# así que 3 Telegram sobre 5 = 60% aunque el cap "parezca" razonable. Estos límites
+# son PROPORCIONALES al tamaño real del run:
+#   - Ningún medio supera MEDIO_MAX_SHARE de lo publicado en el run.
+#   - El conjunto "underground" (Telegram + Exploit-DB) no supera UNDERGROUND_MAX_SHARE,
+#     lo que reserva implícitamente el resto de slots para prensa/RSS mainstream
+#     (cuota mínima mainstream).
+# El FLOOR garantiza que en runs muy pequeños siempre entre al menos 1 (evita bloqueo).
+UNDERGROUND_MEDIOS = {"Telegram", "Exploit-DB"}
+MEDIO_MAX_SHARE = 0.40        # un medio individual <= 40% del run real
+UNDERGROUND_MAX_SHARE = 0.50  # TG + Exploit-DB juntos <= 50% del run real
+DIVERSIDAD_FLOOR = 1          # siempre permitir al menos 1 por (grupo de) medio
 
 def medio_de_fuente(source):
     """Mapea un 'source' a su 'medio' para aplicar cuotas de diversidad."""
@@ -217,6 +231,33 @@ def medio_de_fuente(source):
 
 def cap_para_medio(medio):
     return MEDIO_CAPS.get(medio, MEDIO_CAP_DEFAULT)
+
+def _cap_dinamico(share, count):
+    """Máximo permitido para un (grupo de) medio si añadimos un item más.
+
+    Se proyecta sobre (count+1) = tamaño del run tras incluir este item, de modo
+    que el ratio resultante no supere `share`. El FLOOR evita bloquear runs pequeños.
+    """
+    return max(DIVERSIDAD_FLOOR, round(share * (count + 1)))
+
+def pasa_diversidad(medio, medio_counts, count):
+    """Decide si un item de `medio` puede publicarse sin romper la diversidad.
+
+    `count` es el nº de noticias ya publicadas en este run. Devuelve (ok, motivo).
+    """
+    actual = medio_counts.get(medio, 0)
+    # 1) Cap absoluto por medio.
+    if actual >= cap_para_medio(medio):
+        return False, f"cap absoluto del medio ({cap_para_medio(medio)})"
+    # 2) Cap dinámico proporcional por medio.
+    if actual + 1 > _cap_dinamico(MEDIO_MAX_SHARE, count):
+        return False, f"cuota dinámica del medio (<= {int(MEDIO_MAX_SHARE*100)}% del run)"
+    # 3) Cuota del grupo "underground" (reserva slots para mainstream).
+    if medio in UNDERGROUND_MEDIOS:
+        ug = sum(v for m, v in medio_counts.items() if m in UNDERGROUND_MEDIOS)
+        if ug + 1 > _cap_dinamico(UNDERGROUND_MAX_SHARE, count):
+            return False, f"cuota underground (<= {int(UNDERGROUND_MAX_SHARE*100)}% del run)"
+    return True, ""
 
 def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.35):
     texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
@@ -606,7 +647,7 @@ def job():
     
     # NVD CVE API
     try:
-        cve_items = scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=5)
+        cve_items = scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=8)
         all_news.extend(cve_items)
         logger.info(f"NVD: {len(cve_items)} CVEs añadidos")
     except Exception as e:
@@ -682,10 +723,10 @@ def job():
 
         source = item['source']
         medio = medio_de_fuente(source)
-        cap = cap_para_medio(medio)
-        if medio_counts.get(medio, 0) >= cap:
+        ok_div, motivo_div = pasa_diversidad(medio, medio_counts, count)
+        if not ok_div:
             drop_stats["cap_medio"] += 1
-            logger.info(f"[Diversidad] Saltando '{item['title'][:50]}' — medio '{medio}' ya alcanzó su cuota ({cap})")
+            logger.info(f"[Diversidad] Saltando '{item['title'][:50]}' — medio '{medio}': {motivo_div}")
             continue
 
         logger.info(f"Procesando [{medio}] {item['title']}")

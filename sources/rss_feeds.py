@@ -72,7 +72,7 @@ def is_recent(date_str, max_age_days=2):
     return False
 
 
-def scrape_rss_feed(url, source_name, limit=5, max_age_days=3):
+def scrape_rss_feed(url, source_name, limit=8, max_age_days=3):
     """Scraper genérico de RSS/Atom feeds."""
     try:
         r = scraper.get(url, headers=HEADERS, timeout=15)
