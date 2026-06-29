@@ -259,11 +259,14 @@ def pasa_diversidad(medio, medio_counts, count):
             return False, f"cuota underground (<= {int(UNDERGROUND_MAX_SHARE*100)}% del run)"
     return True, ""
 
-def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.35):
+def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.35, source_nuevo=""):
     texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
     cves_nuevo, entidades_nuevo = _extraer_entidades_tecnicas(texto_nuevo)
-    # Revisar las ultimas 100 noticias
-    for noticia in noticias_existentes[:100]:
+    candidata = {"titulo": titulo_nuevo, "resumen": resumen_nuevo, "fuente": source_nuevo}
+    ventana = noticias_existentes[:100]
+    # Frecuencia documental de nombres propios sobre la ventana (para medir rareza).
+    df_propios = _df_nombres_propios(ventana)
+    for noticia in ventana:
         texto_existente = f"{noticia.get('titulo', '')} {noticia.get('resumen', '')}"
         # Chequeo 1: similitud por palabras
         similitud = calcular_similitud(texto_nuevo, texto_existente)
@@ -279,6 +282,9 @@ def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=
             entidades_comunes = entidades_nuevo & entidades_existente
             if len(entidades_comunes) >= 3 and similitud >= 0.25:
                 return True, noticia.get('titulo', '')
+        # Chequeo 4: misma historia desde otro medio (nombre propio raro compartido).
+        if _misma_historia_propios(candidata, noticia, df_propios):
+            return True, noticia.get('titulo', '')
     return False, ""
 
 # ── Deduplicación retroactiva de alta confianza ───────────────────────────────
@@ -328,7 +334,75 @@ def _jaccard_titulos(t1, t2):
 def _cves_de(texto):
     return set(re.findall(r'cve-\d{4}-\d+', texto.lower()))
 
-def son_duplicadas(n1, n2):
+# ── Dedup por NOMBRES PROPIOS raros (misma historia desde medios distintos) ─────
+# El caso que ni la clave de contenido (títulos distintos), ni el CVE (campañas
+# sin CVE), ni el Jaccard de títulos atrapaban: la MISMA historia cubierta por
+# varios medios con titulares reformulados (FortiBleed, Mistic, WhatsApp/VBScript,
+# Operación Endgame, Huione, npm-PostCSS...). La señal limpia es un NOMBRE PROPIO
+# (mayúscula/CamelCase/ALLCAPS) RARO en el corpus: 'fortibleed' aparece en pocos
+# artículos; 'cisa'/'vulnerabilidad' en decenas. Calibrado sobre noticias.json:
+# 14/14 parejas marcadas eran duplicados reales (0 falsos +).
+_NOMBRES_PROPIOS_STOP = {
+    "una", "este", "esta", "estos", "estas", "para", "como", "desde", "tras", "segun",
+    "con", "por", "sin", "cuando", "aunque", "ademas", "varios", "varias", "nueva",
+    "nuevo", "nuevos", "agencia", "ahora", "estados", "unidos", "research",
+    # genéricos de seguridad que suelen ir capitalizados pero no distinguen historias
+    "seguridad", "vulnerabilidad", "vulnerabilidades", "ataque", "ataques", "alerta",
+    "urgente", "campana", "campa", "infraestructura", "cibernetica", "ciberseguridad",
+    "exploit", "malware",
+}
+# Un nombre propio se considera "raro" (distintivo) si aparece en <= este nº de
+# noticias del corpus. Por encima es un término recurrente (vendor común, CISA...).
+DF_PROPIO_RARO = 6
+DF_PROPIO_ULTRARARO = 2  # casi único de la historia → señal muy fuerte
+
+def _nombres_propios(texto):
+    """Tokens en mayúscula/CamelCase/ALLCAPS (nombres propios) normalizados."""
+    out = set()
+    for m in re.finditer(r'[A-Za-z][A-Za-z0-9+]{3,}', texto):
+        w = m.group()
+        if re.search(r'[a-z][A-Z]|[A-Z]{2}', w) or w[0].isupper():
+            nw = _norm_dedup(w)
+            if nw not in _NOMBRES_PROPIOS_STOP and nw not in _PALABRAS_GENERICAS:
+                out.add(nw)
+    return out
+
+def _df_nombres_propios(noticias):
+    """Frecuencia documental de cada nombre propio sobre el corpus dado."""
+    df = {}
+    for n in noticias:
+        for w in _nombres_propios(f"{n.get('titulo','')}. {n.get('resumen','')}"):
+            df[w] = df.get(w, 0) + 1
+    return df
+
+def _jaccard_contenido(n1, n2):
+    a = _tokens_dedup(f"{n1.get('titulo','')} {n1.get('resumen','')}")
+    b = _tokens_dedup(f"{n2.get('titulo','')} {n2.get('resumen','')}")
+    return len(a & b) / len(a | b) if a and b else 0.0
+
+def _misma_historia_propios(n1, n2, df):
+    """True si comparten nombre(s) propio(s) raro(s) + solape de contenido.
+
+    Requiere `df` (frecuencia documental del corpus) para medir rareza.
+    Solo aplica a pares de MEDIOS DISTINTOS: la misma historia republicada por el
+    mismo medio (p.ej. digests diarios "Stormcast", o familias de CVEs de un mismo
+    producto) la cubren otras capas, y aquí daría falsos positivos.
+    """
+    m1 = medio_de_fuente(n1["fuente"]) if n1.get("fuente") else None
+    m2 = medio_de_fuente(n2["fuente"]) if n2.get("fuente") else None
+    if m1 and m2 and m1 == m2:
+        return False
+    p1 = _nombres_propios(f"{n1.get('titulo','')}. {n1.get('resumen','')}")
+    p2 = _nombres_propios(f"{n2.get('titulo','')}. {n2.get('resumen','')}")
+    comunes = {w for w in (p1 & p2) if df.get(w, 0) <= DF_PROPIO_RARO}
+    if not comunes:
+        return False
+    ultra = any(df.get(w, 0) <= DF_PROPIO_ULTRARARO for w in comunes)
+    jc = _jaccard_contenido(n1, n2)
+    # Nombre casi único compartido + algo de solape; o varios raros; o uno + solape alto.
+    return (ultra and jc >= 0.15) or (len(comunes) >= 2 and jc >= 0.18) or jc >= 0.30
+
+def son_duplicadas(n1, n2, df=None):
     """True si dos noticias son la MISMA historia (alta confianza, pocos falsos +).
 
     Señales (con veto de CVE para no fusionar vulnerabilidades distintas):
@@ -336,6 +410,7 @@ def son_duplicadas(n1, n2):
       - mismo CVE → duplicado.
       - títulos casi idénticos (Jaccard ≥ 0.85) → duplicado.
       - Jaccard ≥ 0.6 Y mismas entidades distintivas → duplicado.
+      - (si se pasa `df`) comparten un nombre propio raro + solape de contenido.
     """
     t1, t2 = n1.get("titulo", ""), n2.get("titulo", "")
     c1 = _cves_de(f"{t1} {n1.get('resumen','')}")
@@ -348,6 +423,9 @@ def son_duplicadas(n1, n2):
     e1, e2 = _entidades_distintivas(t1), _entidades_distintivas(t2)
     if j >= 0.6 and e1 and e1 == e2:
         return True
+    # Capa de nombres propios raros (solo con contexto de corpus para medir rareza).
+    if df is not None and _misma_historia_propios(n1, n2, df):
+        return True
     return False
 
 def deduplicar_noticias(noticias):
@@ -356,9 +434,10 @@ def deduplicar_noticias(noticias):
 
     Devuelve (lista_limpia, eliminadas).
     """
+    df = _df_nombres_propios(noticias)
     kept, eliminadas = [], []
     for n in noticias:
-        if any(son_duplicadas(n, k) for k in kept):
+        if any(son_duplicadas(n, k, df=df) for k in kept):
             eliminadas.append(n)
         else:
             kept.append(n)
@@ -745,7 +824,8 @@ def job():
             continue
 
         # Filtrar similitud (capa 3: semántica, sobre el título ya resumido)
-        es_similar, titulo_similar = es_noticia_similar(titulo_ai, resumen_ai, noticias_actualizadas)
+        es_similar, titulo_similar = es_noticia_similar(
+            titulo_ai, resumen_ai, noticias_actualizadas, source_nuevo=item["source"])
         if es_similar:
             drop_stats["similar"] += 1
             logger.info(f"Noticia omitida por demasiada similitud con: {titulo_similar}")
