@@ -286,6 +286,12 @@ def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=
     df_propios = _df_nombres_propios(ventana)
     for noticia in ventana:
         texto_existente = f"{noticia.get('titulo', '')} {noticia.get('resumen', '')}"
+        cves_existente = set(re.findall(r'cve-\d{4}-\d+', texto_existente.lower()))
+        # VETO de CVE: si ambas tienen CVE(s) y son DISJUNTOS, son vulnerabilidades
+        # DISTINTAS → nunca es la misma noticia (aunque el resumen IA sea calcado,
+        # p.ej. "Vulnerabilidad SQL en X permite..."). Evita matar CVEs nuevos.
+        if cves_nuevo and cves_existente and not (cves_nuevo & cves_existente):
+            continue
         # Chequeo 1: similitud por palabras
         similitud = calcular_similitud(texto_nuevo, texto_existente)
         if similitud >= umbral:
@@ -293,7 +299,6 @@ def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=
         # Chequeo 2: mismo CVE = siempre duplicado
         if cves_nuevo:
             _, entidades_existente = _extraer_entidades_tecnicas(texto_existente)
-            cves_existente = set(re.findall(r'cve-\d{4}-\d+', texto_existente.lower()))
             if cves_nuevo & cves_existente:
                 return True, noticia.get('titulo', '')
             # Chequeo 3: misma entidad técnica + alta superposición de contexto
