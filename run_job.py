@@ -138,6 +138,18 @@ def get_github_file():
             data = r.json()
             content = data.get("content", "")
             if not content:
+                # Archivos >1MB: la contents API devuelve content vacío (encoding
+                # "none") aunque el archivo exista. Pedir el raw aparte — tratarlo
+                # como vacío republicaría todo y SOBREESCRIBIRÍA el historial.
+                if data.get("size", 0) > 0:
+                    raw_r = requests.get(
+                        url,
+                        headers={**headers, "Accept": "application/vnd.github.raw+json"},
+                        timeout=30,
+                    )
+                    raw_r.raise_for_status()
+                    raw = raw_r.content.decode("utf-8").strip()
+                    return json.loads(raw) if raw else [], data.get("sha")
                 return [], data.get("sha")
 
             raw = base64.b64decode(content).decode("utf-8").strip()
@@ -150,13 +162,6 @@ def get_github_file():
 
     logger.error(f"Error leyendo noticias.json en GitHub tras {GITHUB_MAX_RETRIES} intentos: {last_error}")
     return None, None
-
-def get_published_links():
-    """Devuelve el set de URLs ya publicadas en noticias.json — sirve como deduplicación."""
-    noticias, _ = get_github_file()
-    if not noticias:
-        return set()
-    return {n.get("enlace_original", "") for n in noticias}
 
 def calcular_similitud(texto1, texto2):
     if not texto1 or not texto2:
@@ -499,7 +504,7 @@ def commit_noticias(noticias, sha, nuevas=0):
         logger.error("GIT_TOKEN no configurado: no se puede commitear noticias.json")
         return False
 
-    noticias = noticias[:500]
+    noticias = noticias[:1000]
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
         "message": f"feat: add {nuevas} news items ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)",
@@ -524,15 +529,21 @@ def commit_noticias(noticias, sha, nuevas=0):
 
 # ── Logic ─────────────────────────────────────────────────────────────────────
 
+# Keywords CORTOS: matching por palabra completa (\b). Como substring dan falsos
+# positivos masivos: "ia" en "historia/social", "ai" en "email", "apt" en "laptop",
+# "soc" en "social", "nist" en "ministerio", "rag" en "dragon".
+_IA_CORTOS_RE = re.compile(r'\b(ia|ai|llm|gpt|rag|gpu|tpu|amd|chips?)\b')
+_SECURITY_CORTOS_RE = re.compile(r'\b(apt|soc|siem|xdr|edr|vpn|nist|ddos)\b')
+
 def detectar_categoria(title, source):
     text = title.lower()
     # Expanded AI keywords: agents, models, AI companies, frameworks, research orgs
     ia_keywords = [
-        "ia", "ai", "inteligencia artificial", "llm", "gpt", "claude", "gemini", "openai",
+        "inteligencia artificial", "claude", "gemini", "openai",
         "anthropic", "chatgpt", "copilot", "midjourney", "stable diffusion", "dall-e",
         "machine learning", "deep learning", "neural", "transformer", "modelo de lenguaje",
-        "nvidia", "amd", "chip", "gpu", "tpu", "acelerador", "computacion",
-        "robotica", "robot", "autonomo", "asml", "agente", "rag", "embeddings",
+        "nvidia", "acelerador", "computacion",
+        "robotica", "robot", "autonomo", "asml", "agente", "embeddings",
         "hugging face", "langchain", "pytorch", "tensorflow"
     ]
     # Expanded cybersecurity keywords: threats, tools, compliance, incidents
@@ -540,15 +551,15 @@ def detectar_categoria(title, source):
         "seguridad", "ciberseguridad", "hacker", "hacking", "malware", "ransomware",
         "vulnerabilidad", "exploit", "cve-", "zero-day", "0-day", "ciberataque",
         "brecha", "filtracion", "data breach", "deepfake", "privacidad", "phishing",
-        "spyware", "trojan", "botnet", "ddos", "firewall", "vpn", "cifrado",
+        "spyware", "trojan", "botnet", "firewall", "cifrado",
         "encriptacion", "autenticacion", "credential", "password", "contraseña",
-        "backdoor", "rootkit", "apt", "threat", "amenaza", "incidente", "parche",
-        "compliance", "gdpr", "iso 27001", "nist", "soc", "siem", "xdr", "edr"
+        "backdoor", "rootkit", "threat", "amenaza", "incidente", "parche",
+        "compliance", "gdpr", "iso 27001"
     ]
 
-    if any(k in text for k in ia_keywords):
+    if _IA_CORTOS_RE.search(text) or any(k in text for k in ia_keywords):
         return "IA"
-    if any(k in text for k in security_keywords):
+    if _SECURITY_CORTOS_RE.search(text) or any(k in text for k in security_keywords):
         return "Ciberseguridad"
 
     return {
@@ -583,7 +594,8 @@ def get_image_url(categoria, used_images=None):
         "Tech": "technology digital"
     }.get(categoria, "technology")
 
-    for _ in range(5):
+    # Sin key no tiene sentido intentar Unsplash (5 requests fallidas por noticia).
+    for _ in range(5 if UNSPLASH_ACCESS_KEY else 0):
         try:
             r = requests.get(
                 "https://api.unsplash.com/photos/random",
@@ -743,13 +755,17 @@ def send_to_telegram(message):
     if token.lower().startswith("bot"):
         token = token[3:]
     
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message,
+               "parse_mode": "Markdown", "disable_web_page_preview": False}
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": message,
-                  "parse_mode": "Markdown", "disable_web_page_preview": False},
-            timeout=10
-        )
+        r = requests.post(url, json=payload, timeout=10)
+        if r.status_code == 400:
+            # Markdown inválido (la IA puede generar '_', '*' o '[' sueltos que
+            # rompen parse_mode): reintentar en texto plano para no perder el envío.
+            logger.warning(f"Telegram 400 (Markdown inválido), reintentando sin formato: {r.text}")
+            payload.pop("parse_mode")
+            r = requests.post(url, json=payload, timeout=10)
         if r.status_code != 200:
             logger.error(f"Telegram Error {r.status_code}: {r.text}")
         else:

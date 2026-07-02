@@ -6,6 +6,13 @@ on:
     - cron: '0 */3 * * *'
   workflow_dispatch:
 
+# Nunca dos runs a la vez: si push y schedule coinciden, ambos leerían el mismo
+# sha de noticias.json y el segundo commit fallaría con 409 (noticias ya enviadas
+# a Telegram pero no guardadas → se re-enviarían como duplicados en el run siguiente).
+concurrency:
+  group: news-bot
+  cancel-in-progress: false
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
@@ -21,6 +28,9 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      - name: Run tests
+        run: python -m unittest test_run_job -v
+
       - name: Run bot
         env:
           TELEGRAM_TOKEN:          ${{ secrets.TELEGRAM_TOKEN }}
@@ -28,6 +38,7 @@ jobs:
           UNSPLASH_ACCESS_KEY:     ${{ secrets.UNSPLASH_ACCESS_KEY }}
           GROQ_API_KEY:            ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEY_2:          ${{ secrets.GROQ_API_KEY_2 }}
+          GROQ_API_KEY_3:          ${{ secrets.GROQ_API_KEY_3 }}
           GIT_TOKEN:               ${{ secrets.GIT_TOKEN }}
           NVD_API_KEY:             ${{ secrets.NVD_API_KEY }}
           GREYNOISE_API_KEY:       ${{ secrets.GREYNOISE_API_KEY }}
