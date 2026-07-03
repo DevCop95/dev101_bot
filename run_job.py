@@ -611,8 +611,9 @@ def summarize_news(title, content):
         logger.error("GROQ_API_KEY no configurada")
         return None, None
 
-    # Truncate content to avoid Groq rate limits (max ~10k tokens = ~8000 chars)
-    max_content_length = 8000
+    # Truncar el contenido: para un resumen de 2 frases sobran 4000 chars
+    # (~1000 tokens); a 8000 cada llamada gastaba el doble de cuota diaria.
+    max_content_length = 4000
     if len(content) > max_content_length:
         content = content[:max_content_length] + "..."
 
@@ -815,7 +816,14 @@ def job():
     # ── FASE 2 + 3: Procesamiento con IA + Distribución ──────────────────────
     logger.info("--- Fase 2+3: Análisis IA + Distribución ---")
 
-    MAX_NOTICIAS = 10
+    MAX_NOTICIAS = 5
+    # Presupuesto de llamadas a Groq por run: los candidatos RECHAZADOS o
+    # similares también gastan una llamada completa (~3k tokens), no solo los
+    # publicados. Con 8 runs/día y 2 keys (200k TPD), ~12 llamadas/run es lo
+    # sostenible; sin este tope, un run con muchos rechazos agota la cuota
+    # del día y los runs siguientes salen vacíos (resumen_incompleto).
+    MAX_LLAMADAS_IA = 12
+    llamadas_ia = 0
     count = 0
     medio_counts = {}      # cuántas publicadas por medio (Telegram, Exploit-DB, outlet...)
     # Métricas de descarte para el resumen del run
@@ -823,6 +831,9 @@ def job():
 
     for item in new_items:
         if count >= MAX_NOTICIAS:
+            break
+        if llamadas_ia >= MAX_LLAMADAS_IA:
+            logger.info(f"Presupuesto de llamadas IA agotado ({MAX_LLAMADAS_IA}/run). Cortando para preservar cuota diaria.")
             break
 
         source = item['source']
@@ -836,6 +847,7 @@ def job():
         logger.info(f"Procesando [{medio}] {item['title']}")
 
         # ── Resumen y filtro de relevancia con Groq ───────────────────────────
+        llamadas_ia += 1
         titulo_ai, resumen_ai = summarize_news(item['title'], item.get('content', item['title']))
 
         if titulo_ai == "RECHAZAR":
