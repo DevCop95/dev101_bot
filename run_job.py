@@ -3,11 +3,14 @@
 
 import os, re, time, logging, json, base64, requests
 from datetime import datetime, timedelta, timezone
-from groq import Groq
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env si existe (local)
 load_dotenv()
+
+# Cliente Groq compartido con rotación de keys (importar DESPUÉS de load_dotenv
+# para que las keys del .env local ya estén en el entorno).
+from groq_rotation import GROQ_API_KEYS, groq_chat
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GIT_TOKEN = os.getenv("GIT_TOKEN") or os.getenv("GH_PAT") or ""
@@ -16,22 +19,6 @@ TELEGRAM_TOKEN       = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
 UNSPLASH_ACCESS_KEY  = os.getenv("UNSPLASH_ACCESS_KEY", "")
 
-# Groq admite VARIAS API keys para rotar cuando una agota su cuota diaria (429 TPD).
-# Prioridad: GROQ_API_KEY, luego GROQ_API_KEY_2/_3, luego GROQ_API_KEYS (lista CSV).
-def _cargar_groq_keys():
-    keys = []
-    for name in ("GROQ_API_KEY", "GROQ_API_KEY_2", "GROQ_API_KEY_3"):
-        v = os.getenv(name, "").strip()
-        if v and v not in keys:
-            keys.append(v)
-    for v in os.getenv("GROQ_API_KEYS", "").split(","):
-        v = v.strip()
-        if v and v not in keys:
-            keys.append(v)
-    return keys
-
-GROQ_API_KEYS = _cargar_groq_keys()
-GROQ_API_KEY = GROQ_API_KEYS[0] if GROQ_API_KEYS else ""
 GITHUB_REPO          = "DevCop95/cYHBernews"
 GITHUB_FILE          = "noticias.json"
 
@@ -49,10 +36,6 @@ logger.info(f"GROQ API keys: {len(GROQ_API_KEYS)} configurada(s)" if GROQ_API_KE
 logger.info(f"NVD_API_KEY: {'Configurado' if os.getenv('NVD_API_KEY') else 'No configurado (rate limited)'}")
 logger.info(f"GREYNOISE: {'Configurado' if os.getenv('GREYNOISE_API_KEY') else 'No configurado'}")
 logger.info("------------------------------------")
-
-_groq_clients = [Groq(api_key=k) for k in GROQ_API_KEYS]
-_groq_idx = 0            # índice de la key en uso
-_groq_exhausted = set()  # índices de keys con cuota DIARIA agotada (este run)
 
 # ── Import modules ────────────────────────────────────────────────────────────
 from sources.rss_feeds import ALL_RSS_SCRAPERS
@@ -621,52 +604,10 @@ def get_image_url(categoria, used_images=None):
     return f"https://picsum.photos/seed/{random_seed}/800/450"
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
-
-def _es_rate_limit(e):
-    s = str(e).lower()
-    return "rate_limit" in s or "429" in s or "too many requests" in s
-
-def _es_limite_diario(e):
-    s = str(e).lower()
-    return "per day" in s or "tpd" in s or "tokens per day" in s
-
-def _groq_chat(**kwargs):
-    """Llama a Groq rotando entre las API keys cuando una agota su cuota.
-
-    - Límite DIARIO (TPD): marca la key como agotada para el resto del run.
-    - 429 transitorio (por minuto): solo rota, sin descartarla.
-    Devuelve la respuesta de la API o None si no queda ninguna key utilizable.
-    """
-    global _groq_idx
-    n = len(_groq_clients)
-    if n == 0:
-        logger.error("No hay GROQ_API_KEY configurada")
-        return None
-    intentos = 0
-    while intentos < n:
-        if _groq_idx in _groq_exhausted:
-            _groq_idx = (_groq_idx + 1) % n
-            intentos += 1
-            continue
-        try:
-            return _groq_clients[_groq_idx].chat.completions.create(**kwargs)
-        except Exception as e:
-            if _es_rate_limit(e):
-                if _es_limite_diario(e):
-                    _groq_exhausted.add(_groq_idx)
-                    logger.warning(f"Groq key #{_groq_idx+1} agotó su cuota DIARIA. Rotando a la siguiente...")
-                else:
-                    logger.warning(f"Groq key #{_groq_idx+1} con rate limit transitorio. Rotando...")
-                _groq_idx = (_groq_idx + 1) % n
-                intentos += 1
-                continue
-            logger.error(f"Groq error (no rate-limit): {e}")
-            return None
-    logger.error("Groq: todas las API keys agotaron su cuota. No se puede resumir más en este run.")
-    return None
+# La rotación de keys vive en groq_rotation.py (compartida con mitre_tagger).
 
 def summarize_news(title, content):
-    if not _groq_clients:
+    if not GROQ_API_KEYS:
         logger.error("GROQ_API_KEY no configurada")
         return None, None
 
@@ -676,7 +617,7 @@ def summarize_news(title, content):
         content = content[:max_content_length] + "..."
 
     try:
-        r = _groq_chat(
+        r = groq_chat(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": """Eres un analista senior de inteligencia de ciberseguridad e IA con 15 años de experiencia en SOCs de nivel 3. Tu estilo es técnico, preciso y directo — como un briefing para un CISO.

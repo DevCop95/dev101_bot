@@ -2,6 +2,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timedelta
 import run_job
+import groq_rotation
 # is_recent vive en sources/rss_feeds.py tras el refactor a módulos
 from sources.rss_feeds import is_recent
 
@@ -73,6 +74,46 @@ class TestRunJob(unittest.TestCase):
         self.assertIn('title', sample_item)
         self.assertIn('link', sample_item)
         self.assertIn('source', sample_item)
+
+
+class TestGroqRotation(unittest.TestCase):
+    def test_rotacion_en_limite_diario(self):
+        # La key #1 agota su cuota diaria (TPD) → debe rotar a la #2 y marcar
+        # la #1 como agotada para el resto del run.
+        respuesta = MagicMock()
+        key1 = MagicMock()
+        key1.chat.completions.create.side_effect = Exception(
+            "Error code: 429 - rate_limit_exceeded: tokens per day (TPD)")
+        key2 = MagicMock()
+        key2.chat.completions.create.return_value = respuesta
+        with patch.object(groq_rotation, "_clients", [key1, key2]), \
+             patch.object(groq_rotation, "_idx", 0), \
+             patch.object(groq_rotation, "_exhausted", set()):
+            r = groq_rotation.groq_chat(model="m", messages=[])
+            self.assertIs(r, respuesta)
+            self.assertIn(0, groq_rotation._exhausted)
+
+    def test_todas_agotadas_devuelve_none(self):
+        err = Exception("Error code: 429 - tokens per day (TPD)")
+        key1 = MagicMock()
+        key1.chat.completions.create.side_effect = err
+        key2 = MagicMock()
+        key2.chat.completions.create.side_effect = err
+        with patch.object(groq_rotation, "_clients", [key1, key2]), \
+             patch.object(groq_rotation, "_idx", 0), \
+             patch.object(groq_rotation, "_exhausted", set()):
+            self.assertIsNone(groq_rotation.groq_chat(model="m", messages=[]))
+
+    def test_error_no_rate_limit_no_rota(self):
+        # Un error normal (p.ej. modelo inexistente) devuelve None sin quemar keys.
+        key1 = MagicMock()
+        key1.chat.completions.create.side_effect = Exception("model not found")
+        key2 = MagicMock()
+        with patch.object(groq_rotation, "_clients", [key1, key2]), \
+             patch.object(groq_rotation, "_idx", 0), \
+             patch.object(groq_rotation, "_exhausted", set()):
+            self.assertIsNone(groq_rotation.groq_chat(model="m", messages=[]))
+            key2.chat.completions.create.assert_not_called()
 
 
 class TestGetGithubFile(unittest.TestCase):

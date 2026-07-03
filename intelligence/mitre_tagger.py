@@ -2,15 +2,14 @@
 # Usa Groq LLaMA 3.3 con prompt especializado para mapear TTPs
 # Diccionario local de técnicas para validación
 
-import os
 import re
 import logging
-from groq import Groq
+
+# Cliente compartido con rotación de keys: si la key #1 agota su cuota diaria
+# (TPD), el tagger rota igual que el resumidor en vez de fallar todo el run.
+from groq_rotation import GROQ_API_KEYS, groq_chat
 
 logger = logging.getLogger(__name__)
-
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
 
 # ── Diccionario de las técnicas MITRE ATT&CK más comunes ─────────────────────
 # Solo incluimos las más frecuentes en noticias para validación
@@ -141,13 +140,13 @@ def tag_ttps(title, content=""):
     Clasifica TTPs MITRE ATT&CK de una noticia usando Groq.
     Retorna lista de dicts con id y nombre, o lista vacía.
     """
-    if not GROQ_API_KEY or not groq_client:
+    if not GROQ_API_KEYS:
         return []
-    
+
     text = f"Título: {title}\nContenido: {content[:3000]}"
-    
+
     try:
-        r = groq_client.chat.completions.create(
+        r = groq_chat(
             model="llama-3.3-70b-versatile",
             messages=[
                 {"role": "system", "content": MITRE_SYSTEM_PROMPT},
@@ -156,7 +155,9 @@ def tag_ttps(title, content=""):
             temperature=0.1,
             max_tokens=200,
         )
-        
+        if r is None:
+            return []
+
         response = r.choices[0].message.content.strip()
         
         if "NONE" in response.upper():
