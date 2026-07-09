@@ -94,6 +94,7 @@ class TestGroqRotation(unittest.TestCase):
             self.assertIn(0, groq_rotation._exhausted)
 
     def test_todas_agotadas_devuelve_none(self):
+        # Sin NVIDIA_API_KEY no hay fallback: agotar todas las keys da None.
         err = Exception("Error code: 429 - tokens per day (TPD)")
         key1 = MagicMock()
         key1.chat.completions.create.side_effect = err
@@ -101,8 +102,39 @@ class TestGroqRotation(unittest.TestCase):
         key2.chat.completions.create.side_effect = err
         with patch.object(groq_rotation, "_clients", [key1, key2]), \
              patch.object(groq_rotation, "_idx", 0), \
-             patch.object(groq_rotation, "_exhausted", set()):
+             patch.object(groq_rotation, "_exhausted", set()), \
+             patch.object(groq_rotation, "NVIDIA_API_KEY", ""):
             self.assertIsNone(groq_rotation.groq_chat(model="m", messages=[]))
+
+    def test_todas_agotadas_usa_fallback_nvidia(self):
+        # Con NVIDIA_API_KEY, al agotarse todas las keys de Groq se llama a la
+        # API de NVIDIA y la respuesta mantiene la forma de Groq
+        # (r.choices[0].message.content).
+        err = Exception("Error code: 429 - tokens per day (TPD)")
+        key1 = MagicMock()
+        key1.chat.completions.create.side_effect = err
+        resp_http = MagicMock(status_code=200)
+        resp_http.json.return_value = {
+            "choices": [{"message": {"content": "resumen nvidia"}}]
+        }
+        with patch.object(groq_rotation, "_clients", [key1]), \
+             patch.object(groq_rotation, "_idx", 0), \
+             patch.object(groq_rotation, "_exhausted", set()), \
+             patch.object(groq_rotation, "NVIDIA_API_KEY", "nvapi-test"), \
+             patch.object(groq_rotation.requests, "post", return_value=resp_http) as mock_post:
+            r = groq_rotation.groq_chat(
+                model="llama-3.3-70b-versatile", messages=[], max_tokens=250)
+            self.assertEqual(r.choices[0].message.content, "resumen nvidia")
+            # El modelo Groq se reemplaza por el modelo NVIDIA en el payload
+            payload = mock_post.call_args.kwargs["json"]
+            self.assertEqual(payload["model"], groq_rotation.NVIDIA_MODEL)
+            self.assertEqual(payload["max_tokens"], 250)
+
+    def test_fallback_nvidia_http_error_devuelve_none(self):
+        resp_http = MagicMock(status_code=402, text="Payment Required")
+        with patch.object(groq_rotation, "NVIDIA_API_KEY", "nvapi-test"), \
+             patch.object(groq_rotation.requests, "post", return_value=resp_http):
+            self.assertIsNone(groq_rotation.nvidia_chat(model="m", messages=[]))
 
     def test_error_no_rate_limit_no_rota(self):
         # Un error normal (p.ej. modelo inexistente) devuelve None sin quemar keys.

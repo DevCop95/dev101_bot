@@ -3,9 +3,16 @@
 # diaria (TPD) es por organización/key, así que TODOS los consumidores deben
 # rotar juntos — si solo rota el resumidor, el tagger se queda clavado en la
 # key agotada devolviendo 429 el resto del run.
+#
+# Fallback NVIDIA: si TODAS las keys de Groq agotan su cuota diaria, se usa la
+# API de build.nvidia.com (compatible con OpenAI) con un Llama pequeño para que
+# el run no deje noticias sin resumen ni TTPs.
 
 import os
 import logging
+from types import SimpleNamespace
+
+import requests
 from groq import Groq
 
 logger = logging.getLogger(__name__)
@@ -28,6 +35,42 @@ _clients = [Groq(api_key=k) for k in GROQ_API_KEYS]
 _idx = 0            # índice de la key en uso
 _exhausted = set()  # índices de keys con cuota DIARIA agotada (este run)
 
+# ── Fallback NVIDIA ───────────────────────────────────────────────────────────
+# OJO: en integrate.api.nvidia.com solo los Llama 8b/11b responden rápido (<2s
+# medidos); meta/llama-3.2-3b-instruct y nvidia/llama-3.1-nemotron-nano-8b-v1
+# se cuelgan con timeout de más de 60s — no usarlos.
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
+NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct")
+
+
+def nvidia_chat(**kwargs):
+    """Llama al Llama pequeño de NVIDIA como fallback de Groq.
+
+    Reemplaza el `model` recibido (nombre de modelo Groq) por NVIDIA_MODEL y
+    devuelve un objeto con la misma forma que la respuesta de Groq
+    (r.choices[0].message.content), o None si falla o no hay NVIDIA_API_KEY.
+    """
+    if not NVIDIA_API_KEY:
+        return None
+    payload = dict(kwargs, model=NVIDIA_MODEL)
+    try:
+        r = requests.post(
+            NVIDIA_URL,
+            timeout=45,
+            headers={"Authorization": f"Bearer {NVIDIA_API_KEY}",
+                     "Accept": "application/json"},
+            json=payload,
+        )
+        if r.status_code != 200:
+            logger.error(f"NVIDIA fallback HTTP {r.status_code}: {r.text[:200]}")
+            return None
+        content = r.json()["choices"][0]["message"]["content"]
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+    except Exception as e:
+        logger.error(f"NVIDIA fallback error: {e}")
+        return None
+
 
 def _es_rate_limit(e):
     s = str(e).lower()
@@ -43,11 +86,15 @@ def groq_chat(**kwargs):
 
     - Límite DIARIO (TPD): marca la key como agotada para el resto del run.
     - 429 transitorio (por minuto): solo rota, sin descartarla.
-    Devuelve la respuesta de la API o None si no queda ninguna key utilizable.
+    - Sin keys utilizables: intenta el fallback NVIDIA (Llama pequeño).
+    Devuelve la respuesta de la API o None si no queda ningún proveedor.
     """
     global _idx
     n = len(_clients)
     if n == 0:
+        if NVIDIA_API_KEY:
+            logger.warning("No hay GROQ_API_KEY configurada. Usando fallback NVIDIA...")
+            return nvidia_chat(**kwargs)
         logger.error("No hay GROQ_API_KEY configurada")
         return None
     intentos = 0
@@ -70,5 +117,8 @@ def groq_chat(**kwargs):
                 continue
             logger.error(f"Groq error (no rate-limit): {e}")
             return None
+    if NVIDIA_API_KEY:
+        logger.warning("Groq: todas las API keys agotaron su cuota. Usando fallback NVIDIA...")
+        return nvidia_chat(**kwargs)
     logger.error("Groq: todas las API keys agotaron su cuota. No se puede llamar más en este run.")
     return None

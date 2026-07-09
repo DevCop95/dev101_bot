@@ -10,7 +10,7 @@ load_dotenv()
 
 # Cliente Groq compartido con rotación de keys (importar DESPUÉS de load_dotenv
 # para que las keys del .env local ya estén en el entorno).
-from groq_rotation import GROQ_API_KEYS, groq_chat
+from groq_rotation import GROQ_API_KEYS, NVIDIA_API_KEY, groq_chat
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GIT_TOKEN = os.getenv("GIT_TOKEN") or os.getenv("GH_PAT") or ""
@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 logger.info("--- Diagnóstico de Configuración ---")
 logger.info(f"GIT_TOKEN: {'Configurado' if GIT_TOKEN else 'FALTANTE'}")
 logger.info(f"GROQ API keys: {len(GROQ_API_KEYS)} configurada(s)" if GROQ_API_KEYS else "GROQ API keys: FALTANTE")
+logger.info("NVIDIA fallback: " + ("configurado" if NVIDIA_API_KEY else "sin key"))
 logger.info(f"NVD_API_KEY: {'Configurado' if os.getenv('NVD_API_KEY') else 'No configurado (rate limited)'}")
 logger.info(f"GREYNOISE: {'Configurado' if os.getenv('GREYNOISE_API_KEY') else 'No configurado'}")
 logger.info("------------------------------------")
@@ -607,8 +608,8 @@ def get_image_url(categoria, used_images=None):
 # La rotación de keys vive en groq_rotation.py (compartida con mitre_tagger).
 
 def summarize_news(title, content):
-    if not GROQ_API_KEYS:
-        logger.error("GROQ_API_KEY no configurada")
+    if not GROQ_API_KEYS and not NVIDIA_API_KEY:
+        logger.error("Ni GROQ_API_KEY ni NVIDIA_API_KEY configuradas")
         return None, None
 
     # Truncar el contenido: para un resumen de 2 frases sobran 4000 chars

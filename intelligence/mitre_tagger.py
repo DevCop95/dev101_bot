@@ -7,7 +7,7 @@ import logging
 
 # Cliente compartido con rotación de keys: si la key #1 agota su cuota diaria
 # (TPD), el tagger rota igual que el resumidor en vez de fallar todo el run.
-from groq_rotation import GROQ_API_KEYS, groq_chat
+from groq_rotation import GROQ_API_KEYS, NVIDIA_API_KEY, groq_chat
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ def tag_ttps(title, content=""):
     Clasifica TTPs MITRE ATT&CK de una noticia usando Groq.
     Retorna lista de dicts con id y nombre, o lista vacía.
     """
-    if not GROQ_API_KEYS:
+    if not GROQ_API_KEYS and not NVIDIA_API_KEY:
         return []
 
     text = f"Título: {title}\nContenido: {content[:3000]}"
