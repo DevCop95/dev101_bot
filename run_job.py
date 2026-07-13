@@ -488,7 +488,7 @@ def commit_noticias(noticias, sha, nuevas=0):
         logger.error("GIT_TOKEN no configurado: no se puede commitear noticias.json")
         return False
 
-    noticias = noticias[:1000]
+    noticias = noticias[:2000]
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
         "message": f"feat: add {nuevas} news items ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)",
