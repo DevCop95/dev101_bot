@@ -513,60 +513,188 @@ def commit_noticias(noticias, sha, nuevas=0):
 
 # ── Logic ─────────────────────────────────────────────────────────────────────
 
-# Keywords CORTOS: matching por palabra completa (\b). Como substring dan falsos
-# positivos masivos: "ia" en "historia/social", "ai" en "email", "apt" en "laptop",
-# "soc" en "social", "nist" en "ministerio", "rag" en "dragon".
-_IA_CORTOS_RE = re.compile(r'\b(ia|ai|llm|gpt|rag|gpu|tpu|amd|chips?)\b')
-_SECURITY_CORTOS_RE = re.compile(r'\b(apt|soc|siem|xdr|edr|vpn|nist|ddos)\b')
+# ── Clasificación por categoría ───────────────────────────────────────────────
+# El clasificador anterior era "primer match gana" con IA evaluada ANTES que
+# seguridad: cualquier titular que mencionara "IA"/"AI"/"agente" se etiquetaba IA
+# aunque fuera un ransomware ("Ransomware ENCFORGE ataca modelos AI" → IA).
+# Auditoría sobre noticias.json: 159 de 252 "IA" venían de medios de seguridad.
+#
+# Reglas actuales:
+#   1. Se puntúan AMBAS categorías (no hay orden privilegiado).
+#   2. Señal FUERTE (define el tema) = 3 pts; DÉBIL (puede ser contexto) = 1 pt.
+#   3. Lo que aparece en el TÍTULO vale el doble que lo que solo sale en el resumen:
+#      el título es el tema, el resumen suele arrastrar contexto de la otra categoría.
+#   4. El medio aporta un prior de 2 pts a su categoría habitual.
+#   5. La SEGURIDAD gana los empates: en este feed la IA suele ser el vehículo o
+#      la víctima del ataque, no el tema ("Vulnerabilidad en ChatGPT").
+# Matching por palabra completa (\b) siempre: como substring, "ia" pega en
+# "historia", "ai" en "email", "apt" en "laptop", "soc" en "social".
 
-def detectar_categoria(title, source):
-    text = title.lower()
-    # Expanded AI keywords: agents, models, AI companies, frameworks, research orgs
-    ia_keywords = [
-        "inteligencia artificial", "claude", "gemini", "openai",
-        "anthropic", "chatgpt", "copilot", "midjourney", "stable diffusion", "dall-e",
-        "machine learning", "deep learning", "neural", "transformer", "modelo de lenguaje",
-        "nvidia", "acelerador", "computacion",
-        "robotica", "robot", "autonomo", "asml", "agente", "embeddings",
-        "hugging face", "langchain", "pytorch", "tensorflow"
-    ]
-    # Expanded cybersecurity keywords: threats, tools, compliance, incidents
-    security_keywords = [
-        "seguridad", "ciberseguridad", "hacker", "hacking", "malware", "ransomware",
-        "vulnerabilidad", "exploit", "cve-", "zero-day", "0-day", "ciberataque",
-        "brecha", "filtracion", "data breach", "deepfake", "privacidad", "phishing",
-        "spyware", "trojan", "botnet", "firewall", "cifrado",
-        "encriptacion", "autenticacion", "credential", "password", "contraseña",
-        "backdoor", "rootkit", "threat", "amenaza", "incidente", "parche",
-        "compliance", "gdpr", "iso 27001"
-    ]
+PESO_FUERTE = 3
+PESO_DEBIL = 1
+PESO_FUENTE = 2
+PESO_TITULO = 2    # multiplicador de las señales encontradas en el título
+TOPE_RESUMEN = 4   # el resumen aporta contexto, no decide: máximo 4 pts por categoría
 
-    if _IA_CORTOS_RE.search(text) or any(k in text for k in ia_keywords):
+# Señal fuerte de seguridad: si aparece, la noticia va DE un ataque/fallo.
+_SEC_FUERTE = [
+    "ransomware", "malware", "spyware", "stalkerware", "troyano", "trojan", "rootkit",
+    "botnet", "backdoor", "puerta trasera", "phishing", "smishing", "vishing",
+    "exploit", "exploits", "zero-day", "0-day", "0day", "cve", "poc",
+    "vulnerabilidad", "vulnerabilidades", "vulnerable", "vulnerables",
+    "rce", "xss", "sqli", "ssrf", "csrf", "inyeccion", "prompt injection",
+    "malicioso", "maliciosa", "maliciosos", "maliciosas",
+    "ciberataque", "ciberataques", "ciberdelincuentes", "ciberdelincuencia", "cibercrimen",
+    "hacker", "hackers", "hackeo", "hackeado", "hacking", "hackean", "hackea",
+    "intrusion", "comprometido", "comprometidos", "comprometida", "comprometidas",
+    "exfiltracion", "exfiltrar", "secuestro",
+    # "brecha" sola es ambigua en español ("brecha global/digital/salarial" no es
+    # seguridad), así que va como señal DÉBIL y aquí solo sus usos inequívocos.
+    "brecha de datos", "brecha de seguridad", "brechas de seguridad", "brecha en",
+    "filtracion", "data breach", "breach", "breachada", "breacheada",
+    "fuga de datos", "robo de datos", "leak", "abuso", "abusada", "abusado",
+    "infostealer", "stealer", "keylogger", "wiper", "dropper", "loader", "cryptojacking",
+    "extorsion", "credenciales", "credential", "contrasena", "contrasenas", "password",
+    "escalada de privilegios", "privilege escalation", "bypass", "sandbox escape",
+    "supply chain", "cadena de suministro", "cisa", "kev", "apt", "ddos", "c2",
+    "comando y control", "spoofing", "mitm", "troyanizado", "webshell",
+    # Privacidad/fraude/vigilancia son tema propio del sitio, no contexto:
+    # "Chat Control", "MIT implementa vigilancia AI", deepfakes de estafa.
+    "privacidad", "vigilancia", "espionaje", "fraude", "fraudulento", "fraudulenta",
+    "estafa", "estafas", "estafador", "estafadores", "deepfake",
+]
+# Señal débil: entorno de seguridad, pero también aparece en noticias de negocio/IA.
+_SEC_DEBIL = [
+    "seguridad", "ciberseguridad", "amenaza", "amenazas", "threat", "brecha", "brechas",
+    "incidente", "parche", "parches", "parcheo", "cifrado", "encriptacion",
+    "autenticacion", "mfa", "2fa", "firewall", "antivirus", "soc", "siem", "xdr", "edr",
+    "vpn", "nist", "gdpr", "compliance", "iso 27001", "forense", "pentest",
+    "red team", "blue team",
+    "ataque", "ataques", "atacantes", "victimas", "riesgo", "riesgos", "jailbreak",
+]
+# Señal fuerte de IA: nombra el producto, la empresa o la técnica.
+_IA_FUERTE = [
+    "inteligencia artificial", "openai", "anthropic", "chatgpt", "claude", "gemini",
+    "copilot", "midjourney", "stable diffusion", "dall-e", "sora", "mistral", "deepseek",
+    "grok", "llama", "llm", "llms", "gpt", "agi", "machine learning", "deep learning",
+    "aprendizaje automatico", "red neuronal", "redes neuronales", "neural", "transformer",
+    "modelo de lenguaje", "modelos de lenguaje", "hugging face", "langchain",
+    "pytorch", "tensorflow", "embeddings", "fine-tuning", "rag",
+]
+# Señal débil de IA: infraestructura y palabras que la IA comparte con otros temas.
+_IA_DEBIL = [
+    "ia", "ai", "agente", "agentes", "agentic", "robot", "robots", "robotica",
+    "autonomo", "autonoma", "nvidia", "gpu", "gpus", "tpu", "chip", "chips", "amd",
+    "asml", "semiconductor", "semiconductores", "acelerador", "modelo", "modelos",
+    "algoritmo", "algoritmos", "datacenter", "centro de datos", "computacion",
+]
+
+def _re_keywords(palabras):
+    """Regex de palabras completas a partir de una lista de keywords."""
+    return re.compile(r'\b(?:' + '|'.join(re.escape(p) for p in palabras) + r')\b')
+
+_SEC_FUERTE_RE = _re_keywords(_SEC_FUERTE)
+_SEC_DEBIL_RE = _re_keywords(_SEC_DEBIL)
+_IA_FUERTE_RE = _re_keywords(_IA_FUERTE)
+_IA_DEBIL_RE = _re_keywords(_IA_DEBIL)
+
+# Prior por MEDIO (tras limpiar "TG: " y "(Fallback)" con medio_de_fuente).
+CATEGORIA_POR_MEDIO = {
+    "CyberSecurity News": "Ciberseguridad",
+    "WeLiveSecurity": "Ciberseguridad",
+    "DragonJAR": "Ciberseguridad",
+    "El Lado Del Mal": "Ciberseguridad",
+    "Una al Día (Hispasec)": "Ciberseguridad",
+    "The Hacker News": "Ciberseguridad",
+    "Bleeping Computer": "Ciberseguridad",
+    "Krebs on Security": "Ciberseguridad",
+    "Dark Reading": "Ciberseguridad",
+    "Schneier on Security": "Ciberseguridad",
+    "SANS ISC": "Ciberseguridad",
+    "The Record": "Ciberseguridad",
+    "Wired Security": "Ciberseguridad",
+    "NVD (NIST)": "Ciberseguridad",
+    "Exploit-DB": "Ciberseguridad",
+    "Vulners": "Ciberseguridad",
+    "GreyNoise": "Ciberseguridad",
+    "Telegram": "Ciberseguridad",   # los 5 canales monitorizados son de threat intel
+    "IA en Español": "IA",
+    "Xataka IA": "IA",
+}
+
+def categoria_de_fuente(source):
+    """Categoría habitual del medio, o "" si es desconocido.
+
+    Antes esto era un dict con lookup exacto sobre `source`, así que "TG: vx-underground"
+    y "Dark Reading (Fallback)" no matcheaban y caían en "Tech" (7 noticias de
+    seguridad publicadas como Tech).
+    """
+    medio = medio_de_fuente(source or "")
+    if medio in CATEGORIA_POR_MEDIO:
+        return CATEGORIA_POR_MEDIO[medio]
+    m = medio.lower()
+    if any(p in m for p in ("security", "seguridad", "hacker", "cve", "malware",
+                            "threat", "cyber", "ciber", "exploit", "vuln")):
+        return "Ciberseguridad"
+    if re.search(r'\b(ia|ai)\b', m):
         return "IA"
-    if _SECURITY_CORTOS_RE.search(text) or any(k in text for k in security_keywords):
+    return ""
+
+def _puntuar(text, fuerte_re, debil_re):
+    """Puntúa un texto ya normalizado. Cuenta keywords DISTINTAS, no repeticiones."""
+    return (PESO_FUERTE * len(set(fuerte_re.findall(text)))
+            + PESO_DEBIL * len(set(debil_re.findall(text))))
+
+def detectar_categoria(title, source, resumen=""):
+    """Clasifica una noticia en Ciberseguridad / IA / Tech.
+
+    Usa título Y resumen: el título que genera la IA son 3-6 palabras, demasiado
+    poca señal para decidir el tema por sí solo. El título pesa el doble.
+    """
+    t_tit = _norm_dedup(title or "")
+    t_res = _norm_dedup(resumen or "")
+
+    prior = categoria_de_fuente(source)
+
+    # Atajo: una señal FUERTE de seguridad en el título (brecha, vulnerabilidad,
+    # ransomware, inyección...) significa que la noticia va DEL ataque, aunque la
+    # víctima sea un producto de IA. "Vulnerabilidad en API Keys de LLM" y "Hugging
+    # Face breachada" son Ciberseguridad; sin este atajo el resumen —lleno de jerga
+    # de IA— las volcaba a IA. Es la regla editorial del sitio: si hay ataque o fallo
+    # en el titular, es seguridad, aunque la víctima o el arma sea un modelo.
+    if _SEC_FUERTE_RE.search(t_tit):
         return "Ciberseguridad"
 
-    return {
-        "CyberSecurity News": "Ciberseguridad",
-        "WeLiveSecurity": "Ciberseguridad",
-        "DragonJAR": "Ciberseguridad",
-        "El Lado Del Mal": "Ciberseguridad",
-        "Una al Día (Hispasec)": "Ciberseguridad",
-        "The Hacker News": "Ciberseguridad",
-        "Bleeping Computer": "Ciberseguridad",
-        "Krebs on Security": "Ciberseguridad",
-        "Dark Reading": "Ciberseguridad",
-        "Schneier on Security": "Ciberseguridad",
-        "SANS ISC": "Ciberseguridad",
-        "The Record": "Ciberseguridad",
-        "Wired Security": "Ciberseguridad",
-        "NVD (NIST)": "Ciberseguridad",
-        "Exploit-DB": "Ciberseguridad",
-        "Vulners": "Ciberseguridad",
-        "GreyNoise": "Ciberseguridad",
-        "IA en Español": "IA",
-        "Xataka IA": "IA"
-    }.get(source, "IA" if "IA" in source else "Ciberseguridad" if "Security" in source else "Tech")
+    # El tope del resumen evita que un resumen largo (varias keywords distintas)
+    # arrolle al título: "Brecha en Hugging Face" es una brecha, no una noticia de IA.
+    sec = (PESO_TITULO * _puntuar(t_tit, _SEC_FUERTE_RE, _SEC_DEBIL_RE)
+           + min(TOPE_RESUMEN, _puntuar(t_res, _SEC_FUERTE_RE, _SEC_DEBIL_RE))
+           + (PESO_FUENTE if prior == "Ciberseguridad" else 0))
+    ia = (PESO_TITULO * _puntuar(t_tit, _IA_FUERTE_RE, _IA_DEBIL_RE)
+          + min(TOPE_RESUMEN, _puntuar(t_res, _IA_FUERTE_RE, _IA_DEBIL_RE))
+          + (PESO_FUENTE if prior == "IA" else 0))
+
+    if sec == 0 and ia == 0:
+        return prior or "Tech"
+    return "Ciberseguridad" if sec >= ia else "IA"
+
+def reclasificar_noticias(noticias):
+    """Recalcula la categoría del historial con las reglas actuales.
+
+    Las categorías se asignaron con clasificadores previos y quedaron congeladas en
+    noticias.json; sin esta pasada, arreglar `detectar_categoria` solo corrige las
+    noticias FUTURAS. Devuelve (noticias, cambios) con cambios = [(id, antes, después, título)].
+    No toca `url_imagen` (la imagen se eligió por la categoría vieja, pero refrescarla
+    costaría una llamada a Unsplash por noticia).
+    """
+    cambios = []
+    for n in noticias:
+        antes = n.get("categoria", "")
+        nueva = detectar_categoria(n.get("titulo", ""), n.get("fuente", ""), n.get("resumen", ""))
+        if nueva != antes:
+            n["categoria"] = nueva
+            cambios.append((n.get("id"), antes, nueva, n.get("titulo", "")))
+    return noticias, cambios
 
 def get_image_url(categoria, used_images=None):
     if used_images is None:
@@ -869,7 +997,7 @@ def job():
             logger.info(f"Noticia omitida por demasiada similitud con: {titulo_similar}")
             continue
 
-        categoria = detectar_categoria(titulo_ai, item["source"])
+        categoria = detectar_categoria(titulo_ai, item["source"], resumen_ai)
         dedup_key = clave_contenido(item.get('title', ''), item.get('content', ''))
         
         # ── Enriquecimiento de inteligencia ───────────────────────────────────
@@ -939,15 +1067,25 @@ def job():
     for dn in dups:
         logger.info(f"[Dedup retro] eliminada id{dn.get('id')} — {dn.get('titulo')!r} ({dn.get('fuente')})")
 
+    # ── Reclasificación retroactiva ───────────────────────────────────────────
+    # Las categorías del historial se asignaron con las reglas viejas (IA ganaba a
+    # seguridad por orden de evaluación); esta pasada las corrige en el sitio.
+    noticias_actualizadas, recats = reclasificar_noticias(noticias_actualizadas)
+    for rid, antes, despues, tit in recats[:20]:
+        logger.info(f"[Recategoriza] id{rid}: {antes} → {despues} — {tit!r}")
+    if len(recats) > 20:
+        logger.info(f"[Recategoriza] ... y {len(recats) - 20} más")
+
     # ── Commit único + resumen del run ────────────────────────────────────────
-    if count == 0 and not dups:
-        logger.info("Sin noticias nuevas ni duplicados que limpiar.")
+    if count == 0 and not dups and not recats:
+        logger.info("Sin noticias nuevas, duplicados ni categorías que corregir.")
         logger.info(f"=== Resumen descartes: {drop_stats} ===")
         return
 
     commit_noticias(noticias_actualizadas, sha, nuevas=count)
     logger.info("=== Job completado ===")
-    logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)} | dups eliminados: {len(dups)}")
+    logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)} | dups eliminados: {len(dups)}"
+                f" | recategorizadas: {len(recats)}")
     logger.info(f"Descartes: {drop_stats}")
 
 if __name__ == "__main__":

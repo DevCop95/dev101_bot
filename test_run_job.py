@@ -76,6 +76,88 @@ class TestRunJob(unittest.TestCase):
         self.assertIn('source', sample_item)
 
 
+class TestClasificacion(unittest.TestCase):
+    """El clasificador viejo era 'primer match gana' con IA evaluada ANTES que
+    seguridad: cualquier titular con IA/AI/agente caía en IA aunque fuera un
+    ransomware. 159 de 252 noticias 'IA' del histórico venían de medios de seguridad.
+    """
+
+    def test_ataque_sobre_producto_de_ia_es_ciberseguridad(self):
+        # La IA como víctima o como arma: el tema sigue siendo el ataque.
+        casos = [
+            ("Ransomware ENCFORGE ataca modelos AI", "The Hacker News"),
+            ("Vulnerabilidad en ChatGPT", "The Hacker News"),
+            ("Brecha en Hugging Face", "The Record"),
+            ("Malware Dolphin X utiliza IA", "Bleeping Computer"),
+            ("Kit de Phishing con IA expuesto", "The Hacker News"),
+            ("Ataque de inyeccion de prompts en LLMs", "Schneier on Security"),
+            ("Botnet NadMesh ataca servicios AI", "The Hacker News"),
+        ]
+        for titulo, fuente in casos:
+            with self.subTest(titulo=titulo):
+                self.assertEqual(run_job.detectar_categoria(titulo, fuente), "Ciberseguridad")
+
+    def test_noticia_de_industria_ia_sigue_siendo_ia(self):
+        # Sin señal fuerte de ataque, la IA gana aunque la publique un medio de seguridad.
+        self.assertEqual(run_job.detectar_categoria("Samsung Invierte en IA Soberana", "Xataka IA"), "IA")
+        self.assertEqual(run_job.detectar_categoria("Caida global de ChatGPT", "Bleeping Computer"), "IA")
+        self.assertEqual(run_job.detectar_categoria("OpenAI lanza GPT-5.6", "The Hacker News"), "IA")
+
+    def test_seguridad_gana_los_empates(self):
+        # "Agentes AI incorregibles" desde un medio de seguridad: el prior de medio
+        # (2 pts) empata con la señal débil de IA y el desempate va a seguridad.
+        self.assertEqual(
+            run_job.detectar_categoria("Riesgo en codigo AI", "Dark Reading"), "Ciberseguridad")
+
+    def test_resumen_aporta_senal_pero_no_decide(self):
+        # El título son 3-6 palabras: sin el resumen no hay señal suficiente...
+        self.assertEqual(
+            run_job.detectar_categoria("Nuevo movimiento de Samsung", "Unknown Source",
+                                       "La compañía invierte en inteligencia artificial generativa"),
+            "IA")
+        # ...pero un resumen largo lleno de jerga de IA no debe volcar un titular de ataque.
+        self.assertEqual(
+            run_job.detectar_categoria("Vulnerabilidad en API Keys de LLM", "El Lado Del Mal",
+                                       "Los modelos de lenguaje de OpenAI y Anthropic exponen "
+                                       "embeddings y agentes AI en despliegues con LLM"),
+            "Ciberseguridad")
+
+    def test_brecha_sola_es_ambigua(self):
+        # "brecha global/digital" no es una brecha de datos.
+        self.assertEqual(run_job.detectar_categoria("Uso de IA: Brecha global", "Xataka IA"), "IA")
+        self.assertEqual(
+            run_job.detectar_categoria("Brechas de seguridad AI en Europa", "Dark Reading"),
+            "Ciberseguridad")
+
+    def test_prior_por_medio_tolera_prefijos_y_sufijos(self):
+        # Antes el lookup era exacto sobre `source`: "TG: vx-underground" y
+        # "Dark Reading (Fallback)" no matcheaban y caían en "Tech".
+        self.assertEqual(run_job.categoria_de_fuente("TG: vx-underground"), "Ciberseguridad")
+        self.assertEqual(run_job.categoria_de_fuente("Dark Reading (Fallback)"), "Ciberseguridad")
+        self.assertEqual(run_job.categoria_de_fuente("Xataka IA (Fallback)"), "IA")
+        self.assertEqual(run_job.categoria_de_fuente("Medio Desconocido"), "")
+        # Noticia de seguridad de un canal TG sin keywords reconocibles: no es "Tech".
+        self.assertEqual(
+            run_job.detectar_categoria("FBI Incauta Netnut", "TG: vx-underground"), "Ciberseguridad")
+
+    def test_reclasificar_noticias_corrige_historial(self):
+        noticias = [
+            {"id": 3, "categoria": "IA", "titulo": "Ransomware CL0P ataca gobierno",
+             "resumen": "El grupo cifra datos", "fuente": "TG: vx-underground"},
+            {"id": 2, "categoria": "Tech", "titulo": "Bypass mTLS en Android",
+             "resumen": "", "fuente": "TG: Android Malware"},
+            {"id": 1, "categoria": "IA", "titulo": "Samsung invierte en IA soberana",
+             "resumen": "", "fuente": "Xataka IA"},
+        ]
+        noticias, cambios = run_job.reclasificar_noticias(noticias)
+        self.assertEqual([n["categoria"] for n in noticias],
+                         ["Ciberseguridad", "Ciberseguridad", "IA"])
+        self.assertEqual([c[0] for c in cambios], [3, 2])  # la 1 no cambia
+        # Idempotente: una segunda pasada no reporta cambios.
+        _, cambios2 = run_job.reclasificar_noticias(noticias)
+        self.assertEqual(cambios2, [])
+
+
 class TestGroqRotation(unittest.TestCase):
     def test_rotacion_en_limite_diario(self):
         # La key #1 agota su cuota diaria (TPD) → debe rotar a la #2 y marcar
