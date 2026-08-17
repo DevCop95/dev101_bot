@@ -79,10 +79,9 @@ def scrape_rss_feed(url, source_name, limit=8, max_age_days=3):
         logger.info(f"FETCH {source_name}: Status {r.status_code}")
 
         if r.status_code != 200:
-            logger.error(f"RSS Error ({source_name}): Status {r.status_code}")
-            # Fallback to RSS2JSON
-            logger.info(f"Intentando fallback RSS2JSON para {source_name}...")
+            logger.warning(f"RSS Status {r.status_code} ({source_name}). Intentando fallback RSS2JSON...")
             return scrape_rss2json(url, f"{source_name} (Fallback)")
+
 
         # Pasar bytes crudos (r.content) en vez de r.text: deja que el parser XML
         # detecte el encoding declarado en el propio feed y evita el mojibake

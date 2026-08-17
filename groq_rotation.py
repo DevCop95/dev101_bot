@@ -80,11 +80,16 @@ def _es_limite_diario(e):
     s = str(e).lower()
     return "per day" in s or "tpd" in s or "tokens per day" in s
 
+def _es_modelo_no_encontrado(e):
+    s = str(e).lower()
+    return "model_not_found" in s or "does not exist" in s or "404" in s
+
 
 def groq_chat(**kwargs):
-    """Llama a Groq rotando entre las API keys cuando una agota su cuota.
+    """Llama a Groq rotando entre las API keys cuando una agota su cuota o falla.
 
-    - Límite DIARIO (TPD): marca la key como agotada para el resto del run.
+    - Si un modelo devuelve 404 (sin acceso en esa key), reintenta con llama-3.1-8b-instant.
+    - Límite DIARIO (TPD) u otros fallos (401, 403, etc.): marca la key como agotada en este run y rota.
     - 429 transitorio (por minuto): solo rota, sin descartarla.
     - Sin keys utilizables: intenta el fallback NVIDIA (Llama pequeño).
     Devuelve la respuesta de la API o None si no queda ningún proveedor.
@@ -106,19 +111,30 @@ def groq_chat(**kwargs):
         try:
             return _clients[_idx].chat.completions.create(**kwargs)
         except Exception as e:
+            if _es_modelo_no_encontrado(e) and kwargs.get("model") != "llama-3.1-8b-instant":
+                logger.warning(f"Groq key #{_idx+1}: modelo '{kwargs.get('model')}' no disponible ({e}). Reintentando con 'llama-3.1-8b-instant'...")
+                try:
+                    kwargs_fallback = dict(kwargs, model="llama-3.1-8b-instant")
+                    return _clients[_idx].chat.completions.create(**kwargs_fallback)
+                except Exception as e_fallback:
+                    e = e_fallback
+
             if _es_rate_limit(e):
                 if _es_limite_diario(e):
                     _exhausted.add(_idx)
                     logger.warning(f"Groq key #{_idx+1} agotó su cuota DIARIA. Rotando a la siguiente...")
                 else:
                     logger.warning(f"Groq key #{_idx+1} con rate limit transitorio. Rotando...")
-                _idx = (_idx + 1) % n
-                intentos += 1
-                continue
-            logger.error(f"Groq error (no rate-limit): {e}")
-            return None
+            else:
+                _exhausted.add(_idx)
+                logger.warning(f"Groq key #{_idx+1} falló ({e}). Marcando como inactiva y rotando...")
+            _idx = (_idx + 1) % n
+            intentos += 1
+            continue
     if NVIDIA_API_KEY:
-        logger.warning("Groq: todas las API keys agotaron su cuota. Usando fallback NVIDIA...")
+        logger.warning("Groq: todas las API keys fallaron o agotaron su cuota. Usando fallback NVIDIA...")
         return nvidia_chat(**kwargs)
-    logger.error("Groq: todas las API keys agotaron su cuota. No se puede llamar más en este run.")
+    logger.error("Groq: todas las API keys agotaron su cuota o fallaron. No se puede llamar más en este run.")
     return None
+
+

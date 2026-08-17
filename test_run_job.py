@@ -218,16 +218,39 @@ class TestGroqRotation(unittest.TestCase):
              patch.object(groq_rotation.requests, "post", return_value=resp_http):
             self.assertIsNone(groq_rotation.nvidia_chat(model="m", messages=[]))
 
-    def test_error_no_rate_limit_no_rota(self):
-        # Un error normal (p.ej. modelo inexistente) devuelve None sin quemar keys.
+    def test_modelo_404_reintenta_con_8b(self):
+        # Si el modelo pedido da 404, reintenta con llama-3.1-8b-instant en la misma key
+        respuesta = MagicMock()
         key1 = MagicMock()
-        key1.chat.completions.create.side_effect = Exception("model not found")
+        def mock_create(**kwargs):
+            if kwargs.get("model") == "llama-3.3-70b-versatile":
+                raise Exception("The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.")
+            return respuesta
+        key1.chat.completions.create.side_effect = mock_create
+        with patch.object(groq_rotation, "_clients", [key1]), \
+             patch.object(groq_rotation, "_idx", 0), \
+             patch.object(groq_rotation, "_exhausted", set()):
+            r = groq_rotation.groq_chat(model="llama-3.3-70b-versatile", messages=[])
+            self.assertIs(r, respuesta)
+            self.assertEqual(key1.chat.completions.create.call_count, 2)
+            self.assertEqual(key1.chat.completions.create.call_args_list[1].kwargs["model"], "llama-3.1-8b-instant")
+
+    def test_error_clave_invalida_rota_a_siguiente(self):
+        # Un error irrecuperable en la key 1 (401 invalid key) rota a la key 2.
+        respuesta = MagicMock()
+        key1 = MagicMock()
+        key1.chat.completions.create.side_effect = Exception("401 Invalid API Key")
         key2 = MagicMock()
+        key2.chat.completions.create.return_value = respuesta
         with patch.object(groq_rotation, "_clients", [key1, key2]), \
              patch.object(groq_rotation, "_idx", 0), \
              patch.object(groq_rotation, "_exhausted", set()):
-            self.assertIsNone(groq_rotation.groq_chat(model="m", messages=[]))
-            key2.chat.completions.create.assert_not_called()
+            r = groq_rotation.groq_chat(model="llama-3.1-8b-instant", messages=[])
+            self.assertIs(r, respuesta)
+            self.assertIn(0, groq_rotation._exhausted)
+            key2.chat.completions.create.assert_called_once()
+
+
 
 
 class TestGetGithubFile(unittest.TestCase):

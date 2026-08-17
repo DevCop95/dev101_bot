@@ -18,12 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          cache: 'pip'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -39,8 +40,12 @@ jobs:
           GROQ_API_KEY:            ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEY_2:          ${{ secrets.GROQ_API_KEY_2 }}
           GROQ_API_KEY_3:          ${{ secrets.GROQ_API_KEY_3 }}
+          GROQ_API_KEYS:           ${{ secrets.GROQ_API_KEYS }}
           NVIDIA_API_KEY:          ${{ secrets.NVIDIA_API_KEY }}
+          NVIDIA_MODEL:            ${{ vars.NVIDIA_MODEL || secrets.NVIDIA_MODEL }}
           GIT_TOKEN:               ${{ secrets.GIT_TOKEN }}
+          GH_PAT:                  ${{ secrets.GH_PAT || secrets.GIT_TOKEN }}
           NVD_API_KEY:             ${{ secrets.NVD_API_KEY }}
           GREYNOISE_API_KEY:       ${{ secrets.GREYNOISE_API_KEY }}
         run: python run_job.py
+
