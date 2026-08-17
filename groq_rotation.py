@@ -39,9 +39,10 @@ _exhausted = set()  # índices de keys con cuota DIARIA agotada (este run)
 # OJO: en integrate.api.nvidia.com solo los Llama 8b/11b responden rápido (<2s
 # medidos); meta/llama-3.2-3b-instruct y nvidia/llama-3.1-nemotron-nano-8b-v1
 # se cuelgan con timeout de más de 60s — no usarlos.
-NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "").strip()
+NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "meta/llama-3.1-8b-instruct")
+NVIDIA_MODEL = (os.getenv("NVIDIA_MODEL") or "").strip() or "meta/llama-3.1-8b-instruct"
+
 
 
 def nvidia_chat(**kwargs):
@@ -53,7 +54,9 @@ def nvidia_chat(**kwargs):
     """
     if not NVIDIA_API_KEY:
         return None
-    payload = dict(kwargs, model=NVIDIA_MODEL)
+    model_name = (os.getenv("NVIDIA_MODEL") or "").strip() or NVIDIA_MODEL or "meta/llama-3.1-8b-instruct"
+    payload = dict(kwargs, model=model_name)
+
     try:
         r = requests.post(
             NVIDIA_URL,
