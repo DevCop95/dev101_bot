@@ -213,7 +213,7 @@ MEDIO_CAPS = {
     "GreyNoise": 1,
     "Vulners": 2,
 }
-MEDIO_CAP_DEFAULT = 2  # cada outlet RSS individual
+MEDIO_CAP_DEFAULT = 1  # cada outlet RSS individual: máximo 1 por run para máxima diversidad
 
 # ── Diversidad dinámica por ejecución (run) ─────────────────────────────────────
 # El cap absoluto de arriba no basta: los runs reales publican ~5 noticias (no 10),
@@ -247,12 +247,15 @@ def _cap_dinamico(share, count):
     """
     return max(DIVERSIDAD_FLOOR, round(share * (count + 1)))
 
-def pasa_diversidad(medio, medio_counts, count):
+def pasa_diversidad(medio, medio_counts, count, ultimo_medio="", otros_medios_disponibles=False):
     """Decide si un item de `medio` puede publicarse sin romper la diversidad.
 
     `count` es el nº de noticias ya publicadas en este run. Devuelve (ok, motivo).
     """
     actual = medio_counts.get(medio, 0)
+    # 0) Anti-repetición consecutiva con el último publicado en el historial.
+    if count == 0 and actual == 0 and ultimo_medio and medio == ultimo_medio and otros_medios_disponibles:
+        return False, f"anti-repetición consecutiva (último publicado en historial: {ultimo_medio})"
     # 1) Cap absoluto por medio.
     if actual >= cap_para_medio(medio):
         return False, f"cap absoluto del medio ({cap_para_medio(medio)})"
@@ -267,6 +270,7 @@ def pasa_diversidad(medio, medio_counts, count):
     return True, ""
 
 def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.35, source_nuevo=""):
+
     texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
     cves_nuevo, entidades_nuevo = _extraer_entidades_tecnicas(texto_nuevo)
     candidata = {"titulo": titulo_nuevo, "resumen": resumen_nuevo, "fuente": source_nuevo}
@@ -946,32 +950,35 @@ def job():
     logger.info("--- Fase 2+3: Análisis IA + Distribución ---")
 
     MAX_NOTICIAS = 5
-    # Presupuesto de llamadas a Groq por run: los candidatos RECHAZADOS o
-    # similares también gastan una llamada completa (~3k tokens), no solo los
-    # publicados. Con 8 runs/día y 2 keys (200k TPD), ~12 llamadas/run es lo
-    # sostenible; sin este tope, un run con muchos rechazos agota la cuota
-    # del día y los runs siguientes salen vacíos (resumen_incompleto).
-    MAX_LLAMADAS_IA = 12
+    # Presupuesto de llamadas IA por run ampliado a 25 para no truncar la lista
+    # de candidatos ante descartes legítimos.
+    MAX_LLAMADAS_IA = 25
     llamadas_ia = 0
     count = 0
     medio_counts = {}      # cuántas publicadas por medio (Telegram, Exploit-DB, outlet...)
     # Métricas de descarte para el resumen del run
     drop_stats = {"cap_medio": 0, "ia_rechazo": 0, "resumen_incompleto": 0, "similar": 0}
 
+    # Último medio publicado en el historial (para evitar publicar el mismo medio consecutivamente entre runs)
+    ultimo_medio = medio_de_fuente(noticias_existentes[0].get("fuente", "")) if noticias_existentes else ""
+    medios_disponibles = {medio_de_fuente(it.get("source", "")) for it in new_items if it.get("source")}
+
     for item in new_items:
         if count >= MAX_NOTICIAS:
             break
         if llamadas_ia >= MAX_LLAMADAS_IA:
-            logger.info(f"Presupuesto de llamadas IA agotado ({MAX_LLAMADAS_IA}/run). Cortando para preservar cuota diaria.")
+            logger.info(f"Presupuesto de llamadas IA agotado ({MAX_LLAMADAS_IA}/run). Cortando para preservar cuota.")
             break
 
         source = item['source']
         medio = medio_de_fuente(source)
-        ok_div, motivo_div = pasa_diversidad(medio, medio_counts, count)
+        otros_disp = len(medios_disponibles - {ultimo_medio}) > 0
+        ok_div, motivo_div = pasa_diversidad(medio, medio_counts, count, ultimo_medio=ultimo_medio, otros_medios_disponibles=otros_disp)
         if not ok_div:
             drop_stats["cap_medio"] += 1
             logger.info(f"[Diversidad] Saltando '{item['title'][:50]}' — medio '{medio}': {motivo_div}")
             continue
+
 
         logger.info(f"Procesando [{medio}] {item['title']}")
 

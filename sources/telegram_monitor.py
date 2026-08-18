@@ -61,6 +61,11 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL):
             if not text:
                 continue
 
+            # Descartar mensajes cortos de chat casual (memes, comentarios de una frase)
+            if len(text) < 70 and not re.search(r'cve-\d{4}-\d+|https?://|vulnerab|malware|exploit|breach|patch|zero-day|0-day|ransomware|security|ia|ai', text, re.I):
+                continue
+
+
             # Enlace permanente al mensaje
             link = ""
             date_link = msg.select_one("a.tgme_widget_message_date")

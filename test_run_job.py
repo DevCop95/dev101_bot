@@ -474,12 +474,15 @@ class TestDiversidad(unittest.TestCase):
         ok, _ = run_job.pasa_diversidad("Telegram", counts, 5)
         self.assertTrue(ok)
 
-    def test_diversidad_respeta_cap_absoluto(self):
-        # Aunque el run sea grande, el cap absoluto de Telegram (2) manda.
-        counts = {"Telegram": 2, "Bleeping Computer": 5, "The Hacker News": 5}
-        ok, motivo = run_job.pasa_diversidad("Telegram", counts, 12)
+    def test_diversidad_evita_repeticion_consecutiva_historial(self):
+        # Si el último publicado en el historial fue 'Xataka IA', no debe ser el primero del siguiente run si hay otros medios
+        ok, motivo = run_job.pasa_diversidad("Xataka IA", {}, 0, ultimo_medio="Xataka IA", otros_medios_disponibles=True)
         self.assertFalse(ok)
-        self.assertIn("absoluto", motivo)
+        self.assertIn("anti-repetición", motivo)
+        # Si NO hay otros medios disponibles, sí se permite para no bloquear el feed
+        ok, _ = run_job.pasa_diversidad("Xataka IA", {}, 0, ultimo_medio="Xataka IA", otros_medios_disponibles=False)
+        self.assertTrue(ok)
+
 
 
 if __name__ == '__main__':
