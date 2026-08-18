@@ -27,7 +27,7 @@ HEADERS = {
 }
 
 
-def is_recent(date_str, max_age_days=2):
+def is_recent(date_str, max_age_days=5):
     """Verifica si una fecha está dentro de los últimos `max_age_days` días."""
     if not date_str:
         return False
@@ -72,7 +72,7 @@ def is_recent(date_str, max_age_days=2):
     return False
 
 
-def scrape_rss_feed(url, source_name, limit=8, max_age_days=3):
+def scrape_rss_feed(url, source_name, limit=8, max_age_days=5):
     """Scraper genérico de RSS/Atom feeds."""
     try:
         r = scraper.get(url, headers=HEADERS, timeout=15)
@@ -80,7 +80,8 @@ def scrape_rss_feed(url, source_name, limit=8, max_age_days=3):
 
         if r.status_code != 200:
             logger.warning(f"RSS Status {r.status_code} ({source_name}). Intentando fallback RSS2JSON...")
-            return scrape_rss2json(url, f"{source_name} (Fallback)")
+            return scrape_rss2json(url, f"{source_name} (Fallback)", max_age_days=max_age_days)
+
 
 
         # Pasar bytes crudos (r.content) en vez de r.text: deja que el parser XML
