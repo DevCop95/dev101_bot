@@ -205,7 +205,7 @@ class TestGroqRotation(unittest.TestCase):
              patch.object(groq_rotation, "NVIDIA_API_KEY", "nvapi-test"), \
              patch.object(groq_rotation.requests, "post", return_value=resp_http) as mock_post:
             r = groq_rotation.groq_chat(
-                model="llama-3.3-70b-versatile", messages=[], max_tokens=250)
+                model="modelo-principal", messages=[], max_tokens=250)
             self.assertEqual(r.choices[0].message.content, "resumen nvidia")
             # El modelo Groq se reemplaza por el modelo NVIDIA en el payload
             payload = mock_post.call_args.kwargs["json"]
@@ -218,22 +218,23 @@ class TestGroqRotation(unittest.TestCase):
              patch.object(groq_rotation.requests, "post", return_value=resp_http):
             self.assertIsNone(groq_rotation.nvidia_chat(model="m", messages=[]))
 
-    def test_modelo_404_reintenta_con_8b(self):
-        # Si el modelo pedido da 404, reintenta con llama-3.1-8b-instant en la misma key
+    def test_modelo_404_reintenta_con_modelo_de_respaldo(self):
+        # Si el modelo pedido da 404, reintenta con el modelo activo de respaldo.
         respuesta = MagicMock()
         key1 = MagicMock()
         def mock_create(**kwargs):
-            if kwargs.get("model") == "llama-3.3-70b-versatile":
-                raise Exception("The model `llama-3.3-70b-versatile` does not exist or you do not have access to it.")
+            if kwargs.get("model") == "modelo-principal-invalido":
+                raise Exception("The model `modelo-principal-invalido` does not exist or you do not have access to it.")
             return respuesta
         key1.chat.completions.create.side_effect = mock_create
         with patch.object(groq_rotation, "_clients", [key1]), \
              patch.object(groq_rotation, "_idx", 0), \
-             patch.object(groq_rotation, "_exhausted", set()):
-            r = groq_rotation.groq_chat(model="llama-3.3-70b-versatile", messages=[])
+             patch.object(groq_rotation, "_exhausted", set()), \
+             patch.object(groq_rotation, "GROQ_FALLBACK_MODEL", "modelo-respaldo-activo"):
+            r = groq_rotation.groq_chat(model="modelo-principal-invalido", messages=[])
             self.assertIs(r, respuesta)
             self.assertEqual(key1.chat.completions.create.call_count, 2)
-            self.assertEqual(key1.chat.completions.create.call_args_list[1].kwargs["model"], "llama-3.1-8b-instant")
+            self.assertEqual(key1.chat.completions.create.call_args_list[1].kwargs["model"], "modelo-respaldo-activo")
 
     def test_error_clave_invalida_rota_a_siguiente(self):
         # Un error irrecuperable en la key 1 (401 invalid key) rota a la key 2.
@@ -245,7 +246,7 @@ class TestGroqRotation(unittest.TestCase):
         with patch.object(groq_rotation, "_clients", [key1, key2]), \
              patch.object(groq_rotation, "_idx", 0), \
              patch.object(groq_rotation, "_exhausted", set()):
-            r = groq_rotation.groq_chat(model="llama-3.1-8b-instant", messages=[])
+            r = groq_rotation.groq_chat(model="modelo-activo", messages=[])
             self.assertIs(r, respuesta)
             self.assertIn(0, groq_rotation._exhausted)
             key2.chat.completions.create.assert_called_once()
@@ -482,6 +483,14 @@ class TestDiversidad(unittest.TestCase):
         # Si NO hay otros medios disponibles, sí se permite para no bloquear el feed
         ok, _ = run_job.pasa_diversidad("Xataka IA", {}, 0, ultimo_medio="Xataka IA", otros_medios_disponibles=False)
         self.assertTrue(ok)
+
+    def test_ultimo_medio_se_aplaza_sin_descartarse(self):
+        items = [
+            {"source": "Bleeping Computer", "title": "b1"},
+            {"source": "The Hacker News", "title": "h1"},
+        ]
+        result = run_job.aplazar_ultimo_medio(items, "Bleeping Computer")
+        self.assertEqual([i["title"] for i in result], ["h1", "b1"])
 
 
 

@@ -20,7 +20,7 @@
                                                                                     │
                                                                            ┌────────▼─────────┐
                                                                            │  INTELIGENCIA    │
-                                                                           │  Groq LLaMA 3.3  │
+                                                                           │  Groq (config.)  │
                                                                            │  MITRE ATT&CK    │
                                                                            │  IoC Extraction  │
                                                                            │  Severity Class. │
@@ -164,7 +164,7 @@ dev101_bot/
 Cada noticia pasa por este pipeline:
 
 1. **Recolección** → RSS, APIs, Telegram channels
-2. **Filtro de relevancia** → Groq LLaMA 3.3 (acepta/rechaza)
+2. **Filtro de relevancia** → Groq (modelo configurable por `GROQ_MODEL`)
 3. **Resumen IA** → Estilo analista CTI senior
 4. **Extracción IoCs** → Regex: IPs, dominios, hashes, CVEs → formato STIX 2.1
 5. **Clasificación MITRE** → TTPs con IDs validados (T1566, T1486, etc.)

@@ -7,7 +7,7 @@ import logging
 
 # Cliente compartido con rotación de keys: si la key #1 agota su cuota diaria
 # (TPD), el tagger rota igual que el resumidor en vez de fallar todo el run.
-from groq_rotation import GROQ_API_KEYS, NVIDIA_API_KEY, groq_chat
+from groq_rotation import GROQ_API_KEYS, GROQ_PRIMARY_MODEL, NVIDIA_API_KEY, groq_chat
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ def tag_ttps(title, content=""):
 
     try:
         r = groq_chat(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_PRIMARY_MODEL,
             messages=[
                 {"role": "system", "content": MITRE_SYSTEM_PROMPT},
                 {"role": "user", "content": text}

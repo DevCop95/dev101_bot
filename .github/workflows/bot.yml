@@ -41,6 +41,8 @@ jobs:
           GROQ_API_KEY_2:          ${{ secrets.GROQ_API_KEY_2 }}
           GROQ_API_KEY_3:          ${{ secrets.GROQ_API_KEY_3 }}
           GROQ_API_KEYS:           ${{ secrets.GROQ_API_KEYS }}
+          GROQ_MODEL:              ${{ vars.GROQ_MODEL || secrets.GROQ_MODEL || 'openai/gpt-oss-120b' }}
+          GROQ_FALLBACK_MODEL:     ${{ vars.GROQ_FALLBACK_MODEL || secrets.GROQ_FALLBACK_MODEL || 'openai/gpt-oss-20b' }}
           NVIDIA_API_KEY:          ${{ secrets.NVIDIA_API_KEY }}
           NVIDIA_MODEL:            ${{ vars.NVIDIA_MODEL || secrets.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct' }}
           GIT_TOKEN:               ${{ secrets.GIT_TOKEN }}

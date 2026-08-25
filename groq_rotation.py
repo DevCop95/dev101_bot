@@ -4,9 +4,9 @@
 # rotar juntos — si solo rota el resumidor, el tagger se queda clavado en la
 # key agotada devolviendo 429 el resto del run.
 #
-# Fallback NVIDIA: si TODAS las keys de Groq agotan su cuota diaria, se usa la
-# API de build.nvidia.com (compatible con OpenAI) con un Llama pequeño para que
-# el run no deje noticias sin resumen ni TTPs.
+# Fallback NVIDIA: si TODAS las keys de Groq fallan o agotan su cuota diaria, se
+# usa la API de build.nvidia.com (compatible con OpenAI) para que el run no deje
+# noticias sin resumen ni TTPs.
 
 import os
 import logging
@@ -36,6 +36,11 @@ _idx = 0            # índice de la key en uso
 _exhausted = set()  # índices de keys con cuota DIARIA agotada (este run)
 
 # ── Fallback NVIDIA ───────────────────────────────────────────────────────────
+# Los modelos se pueden sobreescribir por entorno para no volver a depender de
+# IDs retirados por el proveedor.
+GROQ_PRIMARY_MODEL = (os.getenv("GROQ_MODEL") or "").strip() or "openai/gpt-oss-120b"
+GROQ_FALLBACK_MODEL = (os.getenv("GROQ_FALLBACK_MODEL") or "").strip() or "openai/gpt-oss-20b"
+
 # OJO: en integrate.api.nvidia.com solo los Llama 8b/11b responden rápido (<2s
 # medidos); meta/llama-3.2-3b-instruct y nvidia/llama-3.1-nemotron-nano-8b-v1
 # se cuelgan con timeout de más de 60s — no usarlos.
@@ -91,7 +96,8 @@ def _es_modelo_no_encontrado(e):
 def groq_chat(**kwargs):
     """Llama a Groq rotando entre las API keys cuando una agota su cuota o falla.
 
-    - Si un modelo devuelve 404 (sin acceso en esa key), reintenta con llama-3.1-8b-instant.
+    - Si un modelo devuelve 404 (sin acceso en esa key), reintenta con un modelo
+      de respaldo activo.
     - Límite DIARIO (TPD) u otros fallos (401, 403, etc.): marca la key como agotada en este run y rota.
     - 429 transitorio (por minuto): solo rota, sin descartarla.
     - Sin keys utilizables: intenta el fallback NVIDIA (Llama pequeño).
@@ -114,10 +120,10 @@ def groq_chat(**kwargs):
         try:
             return _clients[_idx].chat.completions.create(**kwargs)
         except Exception as e:
-            if _es_modelo_no_encontrado(e) and kwargs.get("model") != "llama-3.1-8b-instant":
-                logger.warning(f"Groq key #{_idx+1}: modelo '{kwargs.get('model')}' no disponible ({e}). Reintentando con 'llama-3.1-8b-instant'...")
+            if _es_modelo_no_encontrado(e) and kwargs.get("model") != GROQ_FALLBACK_MODEL:
+                logger.warning(f"Groq key #{_idx+1}: modelo '{kwargs.get('model')}' no disponible ({e}). Reintentando con '{GROQ_FALLBACK_MODEL}'...")
                 try:
-                    kwargs_fallback = dict(kwargs, model="llama-3.1-8b-instant")
+                    kwargs_fallback = dict(kwargs, model=GROQ_FALLBACK_MODEL)
                     return _clients[_idx].chat.completions.create(**kwargs_fallback)
                 except Exception as e_fallback:
                     e = e_fallback
@@ -139,5 +145,4 @@ def groq_chat(**kwargs):
         return nvidia_chat(**kwargs)
     logger.error("Groq: todas las API keys agotaron su cuota o fallaron. No se puede llamar más en este run.")
     return None
-
 

@@ -10,7 +10,9 @@ load_dotenv()
 
 # Cliente Groq compartido con rotación de keys (importar DESPUÉS de load_dotenv
 # para que las keys del .env local ya estén en el entorno).
-from groq_rotation import GROQ_API_KEYS, NVIDIA_API_KEY, groq_chat
+from groq_rotation import (
+    GROQ_API_KEYS, GROQ_FALLBACK_MODEL, GROQ_PRIMARY_MODEL, NVIDIA_API_KEY, groq_chat,
+)
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GIT_TOKEN = os.getenv("GIT_TOKEN") or os.getenv("GH_PAT") or ""
@@ -33,6 +35,7 @@ logger = logging.getLogger(__name__)
 logger.info("--- Diagnóstico de Configuración ---")
 logger.info(f"GIT_TOKEN: {'Configurado' if GIT_TOKEN else 'FALTANTE'}")
 logger.info(f"GROQ API keys: {len(GROQ_API_KEYS)} configurada(s)" if GROQ_API_KEYS else "GROQ API keys: FALTANTE")
+logger.info(f"Groq models: principal={GROQ_PRIMARY_MODEL} | fallback={GROQ_FALLBACK_MODEL}")
 logger.info("NVIDIA fallback: " + ("configurado" if NVIDIA_API_KEY else "sin key"))
 logger.info(f"NVD_API_KEY: {'Configurado' if os.getenv('NVD_API_KEY') else 'No configurado (rate limited)'}")
 logger.info(f"GREYNOISE: {'Configurado' if os.getenv('GREYNOISE_API_KEY') else 'No configurado'}")
@@ -80,6 +83,20 @@ def interleave_by_source(items):
             del by_source[source]
             
     return interleaved
+
+
+def aplazar_ultimo_medio(items, ultimo_medio):
+    """Mueve al final el medio del último envío, sin descartarlo.
+
+    La regla anti-repetición solo debe cambiar el orden de prueba. Si se
+    descarta el medio antes de saber si los demás candidatos son relevantes,
+    un run puede terminar vacío aunque tenga una noticia válida.
+    """
+    if not ultimo_medio:
+        return items
+    alternos = [i for i in items if medio_de_fuente(i.get("source", "")) != ultimo_medio]
+    repetidos = [i for i in items if medio_de_fuente(i.get("source", "")) == ultimo_medio]
+    return alternos + repetidos if alternos and repetidos else items
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
@@ -752,7 +769,7 @@ def summarize_news(title, content):
 
     try:
         r = groq_chat(
-            model="llama-3.3-70b-versatile",
+            model=GROQ_PRIMARY_MODEL,
             messages=[
                 {"role": "system", "content": """Eres un analista senior de inteligencia de ciberseguridad e IA con 15 años de experiencia en SOCs de nivel 3. Tu estilo es técnico, preciso y directo — como un briefing para un CISO.
 
@@ -950,9 +967,10 @@ def job():
     logger.info("--- Fase 2+3: Análisis IA + Distribución ---")
 
     MAX_NOTICIAS = 5
-    # Presupuesto de llamadas IA por run ampliado a 25 para no truncar la lista
-    # de candidatos ante descartes legítimos.
-    MAX_LLAMADAS_IA = 25
+    # Hay una llamada para relevancia/resumen por candidato y otra opcional para
+    # MITRE por noticia publicada. Mantener este límite evita agotar el TPD y
+    # dejar vacíos los runs posteriores.
+    MAX_LLAMADAS_IA = 12
     llamadas_ia = 0
     count = 0
     medio_counts = {}      # cuántas publicadas por medio (Telegram, Exploit-DB, outlet...)
@@ -961,9 +979,9 @@ def job():
 
     # Último medio publicado en el historial (para evitar publicar el mismo medio consecutivamente entre runs)
     ultimo_medio = medio_de_fuente(noticias_existentes[0].get("fuente", "")) if noticias_existentes else ""
-    medios_disponibles = {medio_de_fuente(it.get("source", "")) for it in new_items if it.get("source")}
+    new_items = aplazar_ultimo_medio(new_items, ultimo_medio)
 
-    for item in new_items:
+    for position, item in enumerate(new_items):
         if count >= MAX_NOTICIAS:
             break
         if llamadas_ia >= MAX_LLAMADAS_IA:
@@ -972,7 +990,12 @@ def job():
 
         source = item['source']
         medio = medio_de_fuente(source)
-        otros_disp = len(medios_disponibles - {ultimo_medio}) > 0
+        medios_restantes = {
+            medio_de_fuente(it.get("source", ""))
+            for it in new_items[position + 1:]
+            if it.get("source")
+        }
+        otros_disp = len(medios_restantes - {ultimo_medio}) > 0
         ok_div, motivo_div = pasa_diversidad(medio, medio_counts, count, ultimo_medio=ultimo_medio, otros_medios_disponibles=otros_disp)
         if not ok_div:
             drop_stats["cap_medio"] += 1
