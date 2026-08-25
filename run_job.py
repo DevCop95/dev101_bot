@@ -60,6 +60,66 @@ from intelligence.severity_classifier import (
 def clean_markdown(text):
     return re.sub(r'\*+', '', text).strip()
 
+
+def parse_news_response(response):
+    """Parsea la respuesta de resumen sin inventar contenido faltante.
+
+    El modelo puede devolver solo el campo TÍTULO si alcanza el límite de
+    salida. Nunca debemos reutilizar ese título como resumen: la noticia debe
+    descartarse y quedar disponible para un siguiente run.
+    """
+    response = (response or "").strip()
+    if not response:
+        return None, None
+
+    first_line = next((line.strip() for line in response.splitlines() if line.strip()), "")
+    if re.match(r"^RECHAZAR(?:\s|$)", first_line, re.IGNORECASE):
+        return "RECHAZAR", None
+
+    titulo_ai = ""
+    resumen_parts = []
+    saw_label = False
+    in_resumen = False
+
+    for raw_line in response.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        upper = line.upper()
+        if upper.startswith("TÍTULO:") or upper.startswith("TITULO:"):
+            saw_label = True
+            titulo_ai = clean_markdown(line.split(":", 1)[1].strip())
+            in_resumen = False
+        elif upper.startswith("RESUMEN:"):
+            saw_label = True
+            in_resumen = True
+            value = clean_markdown(line.split(":", 1)[1].strip())
+            if value:
+                resumen_parts.append(value)
+        elif upper.startswith("SECTOR:"):
+            saw_label = True
+            in_resumen = False
+        elif in_resumen:
+            resumen_parts.append(clean_markdown(line))
+
+    resumen_ai = " ".join(resumen_parts).strip()
+    if titulo_ai and resumen_ai and titulo_ai.casefold() != resumen_ai.casefold():
+        return titulo_ai[:80].rstrip(), resumen_ai
+
+    # Si hubo etiquetas pero falta un campo, la respuesta está incompleta.
+    if saw_label:
+        logger.warning("Respuesta IA incompleta: faltan TÍTULO o RESUMEN válidos")
+        return None, None
+
+    # Compatibilidad con el formato antiguo de dos líneas, pero nunca con una
+    # sola línea: una línea no contiene suficiente información para publicar.
+    lines = [clean_markdown(line.strip()) for line in response.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        return lines[0][:80].rstrip(), " ".join(lines[1:]).strip()
+
+    logger.warning("Respuesta IA sin formato publicable: solo contiene una línea")
+    return None, None
+
 def interleave_by_source(items):
     """
     Agrupa los items por su fuente ('source') e intercala sus resultados
@@ -768,7 +828,7 @@ def summarize_news(title, content):
         content = content[:max_content_length] + "..."
 
     try:
-        r = groq_chat(
+        request = dict(
             model=GROQ_PRIMARY_MODEL,
             messages=[
                 {"role": "system", "content": """Eres un analista senior de inteligencia de ciberseguridad e IA con 15 años de experiencia en SOCs de nivel 3. Tu estilo es técnico, preciso y directo — como un briefing para un CISO.
@@ -794,47 +854,21 @@ Si NO cumple criterios: responde ÚNICAMENTE 'RECHAZAR'."""},
                 {"role": "user", "content": f"Título original: {title}\nContenido: {content}"}
             ],
             temperature=0.3,
-            max_tokens=250,
+            max_tokens=500,
         )
+        # GPT-OSS usa tokens internos de razonamiento; con el valor por defecto
+        # puede consumir el límite antes de emitir TÍTULO + RESUMEN completos.
+        if GROQ_PRIMARY_MODEL in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
+            request["reasoning_effort"] = "low"
+        r = groq_chat(**request)
         if r is None:
             return None, None
-        response = r.choices[0].message.content.strip()
-        
-        if "RECHAZAR" in response.upper():
-            return "RECHAZAR", None
-
-        # Parse structured response
-        titulo_ai = ""
-        resumen_ai = ""
-        sector = ""
-        
-        for line in response.split("\n"):
-            line = line.strip()
-            if line.upper().startswith("TÍTULO:") or line.upper().startswith("TITULO:"):
-                titulo_ai = clean_markdown(line.split(":", 1)[1].strip())
-            elif line.upper().startswith("RESUMEN:"):
-                resumen_ai = clean_markdown(line.split(":", 1)[1].strip())
-            elif line.upper().startswith("SECTOR:"):
-                sector = line.split(":", 1)[1].strip()
-        
-        # Fallback: old format (2 lines)
-        if not titulo_ai or not resumen_ai:
-            lines = [l.strip() for l in response.split("\n") if l.strip()]
-            if len(lines) >= 2:
-                titulo_ai = titulo_ai or clean_markdown(lines[0])
-                resumen_ai = resumen_ai or clean_markdown(" ".join(lines[1:]))
-            elif lines:
-                text = lines[0]
-                match = re.search(r'[:.!?]\s', text)
-                if match:
-                    idx = match.start() + 1
-                    titulo_ai = titulo_ai or clean_markdown(text[:idx])
-                    resumen_ai = resumen_ai or clean_markdown(text[idx:])
-                else:
-                    titulo_ai = titulo_ai or clean_markdown(text)
-                    resumen_ai = resumen_ai or ""
-        
-        return titulo_ai, resumen_ai
+        choice = r.choices[0]
+        if getattr(choice, "finish_reason", None) == "length":
+            logger.warning("Respuesta IA truncada por límite de tokens; no se publica")
+            return None, None
+        response = (choice.message.content or "").strip()
+        return parse_news_response(response)
 
     except Exception as e:
         logger.error(f"Groq error: {e}")

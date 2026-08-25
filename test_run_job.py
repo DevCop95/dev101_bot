@@ -13,6 +13,24 @@ class TestRunJob(unittest.TestCase):
         self.assertEqual(run_job.clean_markdown("*Italic* text"), "Italic text")
         self.assertEqual(run_job.clean_markdown("Normal text"), "Normal text")
 
+    def test_parse_news_response_no_duplica_titulo_como_resumen(self):
+        response = (
+            "TÍTULO: CVE-2025-46252: Inyección SQL en filtro de mensajes de "
+            "Contact Form 7 (CV"
+        )
+        self.assertEqual(run_job.parse_news_response(response), (None, None))
+
+    def test_parse_news_response_formato_completo(self):
+        response = (
+            "TÍTULO: Inyección SQL en Contact Form 7\n"
+            "RESUMEN: La vulnerabilidad permite inyección SQL remota en el plugin.\n"
+            "SECTOR: Tecnología"
+        )
+        self.assertEqual(
+            run_job.parse_news_response(response),
+            ("Inyección SQL en Contact Form 7", "La vulnerabilidad permite inyección SQL remota en el plugin."),
+        )
+
     def test_is_recent_spanish(self):
         # Generar una fecha reciente en español
         now = datetime.now()

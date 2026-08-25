@@ -146,15 +146,18 @@ def tag_ttps(title, content=""):
     text = f"Título: {title}\nContenido: {content[:3000]}"
 
     try:
-        r = groq_chat(
+        request = dict(
             model=GROQ_PRIMARY_MODEL,
             messages=[
                 {"role": "system", "content": MITRE_SYSTEM_PROMPT},
                 {"role": "user", "content": text}
             ],
             temperature=0.1,
-            max_tokens=200,
+            max_tokens=300,
         )
+        if GROQ_PRIMARY_MODEL in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
+            request["reasoning_effort"] = "low"
+        r = groq_chat(**request)
         if r is None:
             return []
 
