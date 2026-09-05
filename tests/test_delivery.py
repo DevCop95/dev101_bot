@@ -20,6 +20,12 @@ class DeliveryTests(unittest.TestCase):
         self.stored = []
         self.sha = "revision-0"
         self.revision = 0
+        self.public = []
+        self.public_sha = "public-0"
+        self.public_commits = 0
+        self.branch_exists = True
+        self.checkpoints = []
+        self.fail_public = False
         self.telegram_calls = []
         self.fail_put = False
         self.fail_ack = False
@@ -43,28 +49,47 @@ class DeliveryTests(unittest.TestCase):
         self.enterContext(patch.object(run_job.time, "sleep"))
 
     def get(self, url, **kwargs):
-        encoded = base64.b64encode(json.dumps(self.stored).encode()).decode()
+        if "/git/ref/heads/" in url:
+            if url.endswith("/" + run_job.GITHUB_STATE_BRANCH) and not self.branch_exists:
+                return response(404, {})
+            return response(200, {"object": {"sha": "main-commit"}})
+        is_public = kwargs.get("params", {}).get("ref") == run_job.GITHUB_PUBLIC_BRANCH
+        encoded = base64.b64encode(json.dumps(self.public if is_public else self.stored).encode()).decode()
         wrapped = "\n".join(encoded[i:i + 60] for i in range(0, len(encoded), 60)) + "\n"
-        return response(200, {"sha": self.sha, "content": wrapped})
+        return response(200, {"sha": self.public_sha if is_public else self.sha, "content": wrapped})
 
     def put(self, url, **kwargs):
         payload = kwargs["json"]
+        is_public = payload["branch"] == run_job.GITHUB_PUBLIC_BRANCH
+        self.assertIn(payload["branch"], {run_job.GITHUB_PUBLIC_BRANCH, run_job.GITHUB_STATE_BRANCH})
         intended = json.loads(base64.b64decode(payload["content"]))
-        if self.fail_put or (self.fail_ack and any(n.get("telegram", {}).get("status") == "sent" for n in intended)):
+        if self.fail_put or (is_public and self.fail_public) or (self.fail_ack and any(n.get("telegram", {}).get("status") == "sent" for n in intended)):
             return response(503, {})
-        if payload.get("sha") != self.sha:
+        if payload.get("sha") != (self.public_sha if is_public else self.sha):
             return response(409, {})
-        self.stored = intended
-        self.revision += 1
-        self.sha = f"revision-{self.revision}"
+        if is_public:
+            self.public = intended
+            self.public_commits += 1
+            self.public_sha = f"public-{self.public_commits}"
+        else:
+            self.stored = intended
+            self.revision += 1
+            self.sha = f"revision-{self.revision}"
+        self.checkpoints.append((payload["branch"], deepcopy(intended)))
         if self.accept_then_timeout:
             raise requests.ReadTimeout("simulated")
-        return response(200, {"content": {"sha": self.sha}})
+        return response(200, {"content": {"sha": self.public_sha if is_public else self.sha}})
 
     def post(self, url, **kwargs):
+        if url.endswith("/git/refs"):
+            self.assertEqual(kwargs["json"], {"ref": "refs/heads/bot-state", "sha": "main-commit"})
+            self.branch_exists = True
+            self.stored = deepcopy(self.public)
+            self.sha = self.public_sha
+            return response(201, {})
         # Every external send must already have a durable sending marker.
         if self.stored:
-            self.assertEqual(self.stored[0]["telegram"]["status"], "sending")
+            self.assertTrue(any(n.get("telegram", {}).get("status") == "sending" for n in self.stored))
         self.telegram_calls.append(deepcopy(kwargs["json"]))
         if isinstance(self.telegram_response, Exception):
             raise self.telegram_response
@@ -77,6 +102,8 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(self.stored[0]["telegram"]["status"], "sent")
         self.assertEqual(self.stored[0]["telegram"]["message_id"], 42)
         self.assertNotIn("text", self.stored[0]["telegram"])
+        self.assertEqual(self.public_commits, 1)
+        self.assertNotIn("telegram", self.public[0])
 
     def test_confirmed_rejection_retries_without_losing_news(self):
         self.telegram_response = response(500, {"ok": False, "description": "Rejected"})
@@ -172,6 +199,17 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(len(kept), 2)
         self.assertEqual(removed, [])
 
+    def test_unconfirmed_replacement_cannot_remove_published_story(self):
+        for status in ("pending", "sending", "failed", "uncertain"):
+            with self.subTest(status=status):
+                items = [{"id": 2, "titulo": "Same news", "telegram": {
+                    "status": status, "text": "test", "attempts": 0,
+                }}, {"id": 1, "titulo": "Same news"}]
+                kept, removed = run_job.deduplicar_noticias(items)
+                self.assertEqual(removed, [])
+                run_job.publish_news(kept)
+                self.assertEqual(self.public, [{"id": 1, "titulo": "Same news"}])
+
     def test_retry_after_is_persisted_and_respected(self):
         self.telegram_response = response(429, {"ok": False, "parameters": {"retry_after": 3600}})
         for _ in range(2):
@@ -215,6 +253,110 @@ class DeliveryTests(unittest.TestCase):
             self.assertEqual(run_job.get_github_file(), ([], None))
         with patch.object(run_job.requests, "get", return_value=response(404, {})):
             self.assertEqual(run_job.get_github_file(), (None, None))
+
+    def test_only_final_snapshot_triggers_main_workflows(self):
+        run_job.job()
+        self.assertEqual([branch for branch, _ in self.checkpoints], ["bot-state"] * 3 + ["main"])
+        self.assertEqual([items[0]["telegram"]["status"] for branch, items in self.checkpoints
+                          if branch == "bot-state"], ["pending", "sending", "sent"])
+        self.assertNotIn("telegram", self.checkpoints[-1][1][0])
+
+    def test_two_deliveries_still_publish_once(self):
+        self.stored = [{"id": i, "titulo": f"Story {i}", "telegram": {
+            "status": "pending", "text": f"Story {i}", "attempts": 0,
+        }} for i in (2, 1)]
+        run_job.deliver_pending(deepcopy(self.stored), self.sha)
+        run_job.publish_news(self.stored, nuevas=2)
+        self.assertEqual(len(self.telegram_calls), 2)
+        self.assertEqual(self.public_commits, 1)
+        self.assertEqual(len(self.public), 2)
+        self.assertEqual(sum(branch == "bot-state" for branch, _ in self.checkpoints), 4)
+
+    def test_publication_failure_recovers_without_resending(self):
+        self.fail_public = True
+        with self.assertRaises(RuntimeError):
+            run_job.job()
+        self.assertEqual(self.stored[0]["telegram"]["status"], "sent")
+        self.assertEqual(self.public, [])
+        self.fail_public = False
+        run_job.job()
+        self.assertEqual(len(self.telegram_calls), 1)
+        self.assertEqual(self.public_commits, 1)
+        self.assertEqual(self.public[0]["id"], self.stored[0]["id"])
+
+    def test_publication_excludes_unresolved_records_and_metadata(self):
+        items = [{"id": 1}, {"id": 2, "telegram": {"status": "sent", "message_id": 7}}]
+        for status in ("pending", "sending", "failed", "uncertain"):
+            items.append({"id": len(items) + 1, "telegram": {"status": status, "text": "test"}})
+        run_job.publish_news(items)
+        self.assertEqual(self.public, [{"id": 1}, {"id": 2}])
+
+    def test_later_uncertain_delivery_does_not_hide_confirmed_news(self):
+        self.stored = [{"id": i, "titulo": f"Story {i}", "telegram": {
+            "status": "pending", "text": f"Story {i}", "attempts": 0,
+        }} for i in (2, 1)]
+        outcomes = iter([response(200, {"ok": True, "result": {"message_id": 42}}),
+                         requests.ReadTimeout("simulated")])
+
+        def send(url, **kwargs):
+            self.telegram_response = next(outcomes)
+            return self.post(url, **kwargs)
+
+        with patch.object(run_job.requests, "post", side_effect=send):
+            for _ in range(2):
+                with self.assertRaises(RuntimeError):
+                    run_job.job()
+        self.assertEqual(len(self.telegram_calls), 2)
+        self.assertEqual(self.public, [{"id": 1, "titulo": "Story 1"}])
+        self.assertEqual(self.public_commits, 1)
+
+    def test_uncommitted_ack_never_reaches_public_snapshot(self):
+        self.fail_ack = True
+        with self.assertRaises(RuntimeError):
+            run_job.job()
+        self.assertEqual(self.stored[0]["telegram"]["status"], "sending")
+        self.assertEqual(self.public, [])
+        self.assertEqual(self.public_commits, 0)
+
+    def test_state_bootstrap_preserves_existing_history_and_delivery_states(self):
+        self.branch_exists = False
+        self.public = [{"id": 1}, {"id": 2, "telegram": {
+            "status": "uncertain", "text": "test", "attempts": 1,
+        }}]
+        run_job.ensure_state_branch()
+        actual, sha = run_job.get_github_file()
+        self.assertEqual(actual, self.public)
+        self.assertEqual(sha, self.public_sha)
+        self.assertEqual(self.public_commits, 0)
+        self.assertEqual(self.telegram_calls, [])
+
+    def test_state_bootstrap_does_not_reset_existing_branch(self):
+        self.stored = [{"id": 42}]
+        self.public = [{"id": 1}]
+        with patch.object(run_job.requests, "post") as post:
+            run_job.ensure_state_branch()
+        post.assert_not_called()
+        self.assertEqual(self.stored, [{"id": 42}])
+
+    def test_failed_branch_creation_prevents_sends_and_main_writes(self):
+        self.branch_exists = False
+        with patch.object(run_job.requests, "post", return_value=response(403, {})):
+            with self.assertRaisesRegex(RuntimeError, "inicializar"):
+                run_job.job()
+        self.assertEqual(self.telegram_calls, [])
+        self.assertEqual(self.public_commits, 0)
+
+    def test_branch_created_despite_lost_response_is_reconciled(self):
+        self.branch_exists = False
+        self.public = [{"id": 9}]
+
+        def create(url, **kwargs):
+            self.post(url, **kwargs)
+            raise requests.ReadTimeout("simulated")
+
+        with patch.object(run_job.requests, "post", side_effect=create):
+            run_job.ensure_state_branch()
+        self.assertEqual(self.stored, self.public)
 
 
 if __name__ == "__main__":

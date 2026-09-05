@@ -24,6 +24,8 @@ UNSPLASH_ACCESS_KEY  = os.getenv("UNSPLASH_ACCESS_KEY", "")
 
 GITHUB_REPO          = "DevCop95/cYHBernews"
 GITHUB_FILE          = "noticias.json"
+GITHUB_STATE_BRANCH  = "bot-state"
+GITHUB_PUBLIC_BRANCH = "main"
 
 # Logging setup early
 logging.basicConfig(
@@ -161,7 +163,37 @@ def aplazar_ultimo_medio(items, ultimo_medio):
 
 # ── GitHub ────────────────────────────────────────────────────────────────────
 
-def get_github_file():
+def ensure_state_branch():
+    """Bootstrap the delivery ledger from main once, preserving legacy delivery states."""
+    if not GIT_TOKEN.strip():
+        raise RuntimeError("GIT_TOKEN no configurado")
+    headers = {"Authorization": f"Bearer {GIT_TOKEN.strip()}",
+               "Accept": "application/vnd.github+json"}
+    root = f"https://api.github.com/repos/{GITHUB_REPO}/git"
+    state_url = f"{root}/ref/heads/{GITHUB_STATE_BRANCH}"
+    try:
+        current = requests.get(state_url, headers=headers, timeout=15)
+        if current.status_code == 200:
+            return
+        if current.status_code != 404:
+            current.raise_for_status()
+        main = requests.get(f"{root}/ref/heads/{GITHUB_PUBLIC_BRANCH}", headers=headers, timeout=15)
+        main.raise_for_status()
+        payload = {"ref": f"refs/heads/{GITHUB_STATE_BRANCH}", "sha": main.json()["object"]["sha"]}
+        try:
+            created = requests.post(f"{root}/refs", headers=headers, json=payload, timeout=15)
+            created.raise_for_status()
+            return
+        except requests.RequestException:
+            # Another initializer or a lost response may have created it already.
+            existing = requests.get(state_url, headers=headers, timeout=15)
+            existing.raise_for_status()
+    except (requests.RequestException, ValueError, KeyError, TypeError) as exc:
+        logger.error("No se pudo inicializar la rama de entregas (%s)", type(exc).__name__)
+        raise RuntimeError("No se pudo inicializar bot-state; no se enviaran noticias") from None
+
+
+def get_github_file(branch=GITHUB_STATE_BRANCH):
     """Lee noticias.json de GitHub con reintentos.
 
     Contrato (importante para la deduplicación):
@@ -187,15 +219,15 @@ def get_github_file():
     last_error = None
     for attempt in range(1, GITHUB_MAX_RETRIES + 1):
         try:
-            r = requests.get(url, headers=headers, timeout=15)
+            r = requests.get(url, params={"ref": branch}, headers=headers, timeout=15)
 
             if r.status_code == 401:
                 logger.error(f"Error 401: El token no es válido o no tiene permisos para {GITHUB_REPO}")
                 return None, None  # error de auth: no tiene sentido reintentar
             elif r.status_code == 404:
-                # GitHub also hides inaccessible private repositories behind 404.
+                # A missing branch or inaccessible repository is not an empty file.
                 repo = requests.get(
-                    f"https://api.github.com/repos/{GITHUB_REPO}",
+                    f"https://api.github.com/repos/{GITHUB_REPO}/git/ref/heads/{branch}",
                     headers=headers, timeout=15,
                 )
                 repo.raise_for_status()
@@ -555,7 +587,10 @@ def deduplicar_noticias(noticias):
     for n in noticias:
         # Never discard a queued or unresolved delivery during history cleanup.
         unresolved = n.get("telegram", {}).get("status", "sent") != "sent"
-        if not unresolved and any(son_duplicadas(n, k, df=df) for k in kept):
+        if not unresolved and any(
+            k.get("telegram", {}).get("status", "sent") == "sent"
+            and son_duplicadas(n, k, df=df) for k in kept
+        ):
             eliminadas.append(n)
         else:
             kept.append(n)
@@ -587,7 +622,7 @@ def build_noticia(item, titulo, resumen, categoria, noticias_actuales,
         "iocs": iocs or {},
     }
 
-def commit_noticias(noticias, sha, nuevas=0):
+def commit_noticias(noticias, sha, nuevas=0, *, branch=GITHUB_STATE_BRANCH):
     """Persist a snapshot using compare-and-swap; return its new SHA or fail closed."""
     token = GIT_TOKEN.strip()
     if not token:
@@ -595,7 +630,9 @@ def commit_noticias(noticias, sha, nuevas=0):
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
-        "message": f"feat: add {nuevas} news items ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)",
+        "message": ("feat: publish news snapshot" if branch == GITHUB_PUBLIC_BRANCH
+                    else "chore: checkpoint Telegram deliveries"),
+        "branch": branch,
         "content": base64.b64encode(
             json.dumps(noticias, ensure_ascii=False, indent=2).encode()
         ).decode(),
@@ -620,12 +657,23 @@ def commit_noticias(noticias, sha, nuevas=0):
             logger.warning("GitHub escritura fallo (%s)", type(exc).__name__)
 
         # A timed-out PUT may already have committed. Reconcile before retrying.
-        current, current_sha = get_github_file()
+        current, current_sha = get_github_file(branch)
         if current is not None and current == noticias and current_sha:
             return current_sha
         if current is None or current_sha != sha or not retryable or attempt == 2:
             raise RuntimeError("No se pudo persistir el historial; no se continuara enviando")
         time.sleep(2 ** (attempt + 1))
+
+
+def publish_news(noticias, nuevas=0):
+    """Write one public snapshot, never delivery checkpoints, to the site branch."""
+    public = [{key: value for key, value in n.items() if key != "telegram"}
+              for n in noticias if n.get("telegram", {}).get("status", "sent") == "sent"][:2000]
+    current, sha = get_github_file(GITHUB_PUBLIC_BRANCH)
+    if current is None:
+        raise RuntimeError("No se pudo leer el historial publico; publicacion pendiente")
+    if current != public:
+        commit_noticias(public, sha, nuevas, branch=GITHUB_PUBLIC_BRANCH)
 
 # ── Logic ─────────────────────────────────────────────────────────────────────
 
@@ -1001,12 +1049,27 @@ def job():
     # Obtener noticias actuales de GitHub para deduplicación.
     # IMPORTANTE: si la lectura FALLA (None), abortamos. Tratarlo como historial
     # vacío republicaría todo (causa del incidente de duplicados tipo YAMCS).
+    ensure_state_branch()
     noticias_existentes, sha = get_github_file()
     if noticias_existentes is None:
         raise RuntimeError("No se pudo leer noticias.json; se aborta para evitar duplicados")
 
     if not TELEGRAM_TOKEN.strip() or not TELEGRAM_CHAT_ID.strip():
         raise RuntimeError("Falta configurar Telegram")
+
+    try:
+        _process_news(noticias_existentes, sha)
+    finally:
+        # Publish once, including confirmed sends before a later delivery failed.
+        # Reload durable state: the in-memory copy may contain an uncommitted ACK.
+        persisted, _ = get_github_file()
+        if persisted is None:
+            raise RuntimeError("No se pudo verificar el estado persistido para publicar")
+        publish_news(persisted)
+    logger.info("=== Job completado ===")
+
+
+def _process_news(noticias_existentes, sha):
     sha = deliver_pending(noticias_existentes, sha)
 
     # Estructuras de deduplicación (3 capas)
@@ -1253,7 +1316,6 @@ def job():
 
     sha = commit_noticias(noticias_actualizadas, sha, nuevas=count)
     deliver_pending(noticias_actualizadas, sha)
-    logger.info("=== Job completado ===")
     logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)} | dups eliminados: {len(dups)}"
                 f" | recategorizadas: {len(recats)}")
     logger.info(f"Descartes: {drop_stats}")

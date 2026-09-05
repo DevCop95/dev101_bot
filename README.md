@@ -43,7 +43,7 @@
 2. **Cloudflare Workers** (`api/webhook.js`): Receptor de Telegram. Dispara el Action vía `/noticias`.
 3. **Sources** (`sources/`): RSS/Atom, NVD CVE API, Exploit-DB, GreyNoise y previews públicos de canales de Telegram. Vulners está desactivado en el job.
 4. **Intelligence** (`intelligence/`): Análisis avanzado — clasificación MITRE ATT&CK, extracción de IoCs, clasificación de severidad.
-5. **Persistencia** (`DevCop95/cYHBernews`): `noticias.json` con TTPs, IoCs, severidad y una cola persistente de entregas a Telegram. Se guarda antes del envío y se confirma después.
+5. **Persistencia** (`DevCop95/cYHBernews`): `bot-state/noticias.json` (rama `bot-state`, archivo `noticias.json`) conserva el historial y los estados de entrega. `main/noticias.json` recibe una única instantánea por ejecución, solo con noticias confirmadas y sin metadatos de Telegram.
 6. **CI** (`.github/workflows/ci.yml`): Pruebas offline Python/Worker, cobertura y auditoría de dependencias antes de publicar.
 
 ---
@@ -205,14 +205,17 @@ Cada noticia pasa por este pipeline:
 5. **Clasificación MITRE** → IDs y nombres del catálogo Enterprise ATT&CK v17.1, incluyendo históricos. IDs desconocidos se descartan; la inferencia del modelo no es evidencia confirmada.
 6. **Severidad** → 🔴 Crítica / 🟠 Alta / 🟡 Media / 🟢 Baja / 🔵 Info
 7. **Deduplicación** → Similitud Jaccard + URLs ya publicadas
-8. **Persistencia** → GitHub `noticias.json`, mensaje preparado en estado `pending`
+8. **Persistencia** → GitHub `noticias.json` en la rama `bot-state`, mensaje preparado en estado `pending`
 9. **Distribución** → Reserva `sending`, envío a Telegram y confirmación `sent` con `message_id`
+10. **Publicación web** → Una instantánea en `main/noticias.json`, sin estados intermedios
 
 La utilidad `iocs_to_stix()` está disponible y probada, pero el job no exporta bundles STIX automáticamente. RSS y Telegram comparan timestamps completos en UTC: se rechazan fechas futuras o inválidas y se conservan entradas sin fecha.
 
 El límite es de cinco noticias nuevas y doce llamadas lógicas de IA por ejecución, contando resumen y MITRE; los reintentos internos de proveedor pueden producir más peticiones HTTP. Groq aplica cooldown recuperable a fallos transitorios en vez de invalidar permanentemente una clave válida.
 
 ### Recuperación de entregas
+
+La primera ejecución crea automáticamente la rama `bot-state` desde `main`; requiere que `GIT_TOKEN` pueda crear esa rama con su permiso Contents: read/write. La copia conserva los estados existentes, incluidos pendientes e inciertos. Una rama ya existente nunca se reinicializa. No eliminarla ni fusionarla a `main`: es el historial autoritativo del bot y su cola de entregas.
 
 Los registros históricos sin campo `telegram` se consideran ya publicados y no se reenvían. Los nuevos registros incluyen estado, número de intentos y un identificador único de reserva. La deduplicación y el recorte del historial nunca eliminan entregas pendientes o inciertas.
 
@@ -224,11 +227,11 @@ Los registros históricos sin campo `telegram` se consideran ya publicados y no 
 | `failed` | Rechazo confirmado o fallo de conexión seguro; reintento en otro run, respetando `retry_at`, hasta cinco intentos |
 | `uncertain` | No puede determinarse si Telegram aceptó; no se reenvía automáticamente |
 
-Una entrega bloqueada detiene el job y hace fallar Actions, en vez de perder noticias silenciosamente. Los pendientes anteriores se resuelven antes de recolectar más noticias. Un conflicto de SHA aborta sin sobrescribir datos ajenos; una escritura de GitHub con respuesta perdida se reconcilia por lectura antes de continuar.
+Una entrega bloqueada detiene el procesamiento y hace fallar Actions, en vez de perder noticias silenciosamente. Las entregas ya confirmadas sí se publican, leyendo el estado persistido y no una copia en memoria. Los pendientes anteriores se resuelven antes de recolectar más noticias. Un conflicto de SHA aborta sin sobrescribir datos ajenos; una escritura de GitHub con respuesta perdida se reconcilia por lectura antes de continuar. Si falla solo la publicación web, el siguiente run vuelve a intentarla sin reenviar las noticias a Telegram, incluso si no hay noticias nuevas.
 
-Para recuperar una entrega incierta, pausar los workflows y cualquier proceso local y revisar el mensaje en el chat. Si ya existe, marcar `telegram.status` como `sent` y registrar el `message_id`. Solo si se confirma que no existe, cambiar a `pending`, conservar `text`, reiniciar `attempts` a 0 y eliminar `retry_at`/`error`. Hacer la corrección mediante una escritura que respete el SHA actual y reanudar el job. **No eliminar el campo `telegram` ni reiniciar estados a ciegas:** eso puede perder o duplicar entregas.
+Para recuperar una entrega incierta, pausar los workflows y cualquier proceso local y revisar el mensaje en el chat. Corregir `noticias.json` **en la rama `bot-state`**, no en `main`. Si ya existe el mensaje, marcar `telegram.status` como `sent` y registrar el `message_id`. Solo si se confirma que no existe, cambiar a `pending`, conservar `text`, reiniciar `attempts` a 0 y eliminar `retry_at`/`error`. Hacer la corrección mediante una escritura que respete el SHA actual y reanudar el job. **No eliminar el campo `telegram` ni reiniciar estados a ciegas:** eso puede perder o duplicar entregas.
 
-El JSON del repositorio de noticias puede ser público: no introducir secretos en mensajes ni metadatos. Cada entrega requiere escrituras adicionales en GitHub; se prioriza trazabilidad sobre mantener un único commit por run.
+Ambas ramas pueden ser públicas: no introducir secretos en mensajes ni metadatos. Los checkpoints se guardan en `bot-state`, fuera de la rama de Pages y del filtro del workflow `Split news data` (`main`, `noticias.json`). Así, las escrituras internas no disparan publicaciones concurrentes. Solo se modifica `main` una vez por ejecución si la instantánea pública cambió; la rama de estado no debe configurarse como fuente de Pages.
 
 ---
 
