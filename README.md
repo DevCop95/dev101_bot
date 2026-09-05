@@ -82,6 +82,8 @@ En tu dashboard de Cloudflare Workers > tu worker > **Settings > Variables and S
 
 Configurar cada entorno por separado. `wrangler.toml` declara el Durable Object SQLite `WEBHOOK_STATE` y su migración para default y `production`. El despliegue del Worker debe aplicar esa migración; no basta con copiar el archivo JavaScript. La configuración incompleta devuelve 503 y no procesa comandos.
 
+Workers Builds instala automáticamente `requirements.txt` cuando la raíz del build es `/`. `.python-version` fija Python 3.11, igual que Actions, para usar los wheels Linux cuyos hashes incluye el lock y evitar compilar `lxml` sin `libxml2`/`libxslt`. Mantener esa versión alineada con CI; no eliminar hashes para resolver un fallo de instalación.
+
 ### 3. Registrar el Webhook en Telegram
 
 Registrar el webhook **después** de configurar secretos y desplegar el Worker. El siguiente ejemplo es una operación real de configuración, no una prueba: requiere `TELEGRAM_TOKEN`, `TELEGRAM_WEBHOOK_SECRET` y `WEBHOOK_URL` exportados en un entorno de confianza. No introducir tokens en el navegador ni imprimir respuestas que puedan contener datos sensibles.
