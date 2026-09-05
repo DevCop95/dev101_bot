@@ -4,6 +4,7 @@
 
 import re
 import logging
+import math
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +22,7 @@ CRITICAL_KEYWORDS = [
 
 HIGH_KEYWORDS = [
     "ransomware", "malware", "exploit", "vulnerability", "vulnerabilidad",
-    "cve-", "backdoor", "puerta trasera", "botnet", "ddos",
+    "backdoor", "puerta trasera", "botnet", "ddos",
     "apt", "advanced persistent", "phishing campaign", "campaña de phishing",
     "credential theft", "robo de credenciales", "data leak", "filtración",
     "privilege escalation", "escalada de privilegios", "authentication bypass",
@@ -43,8 +44,22 @@ LOW_KEYWORDS = [
 
 # ── Severidad por CVSS ───────────────────────────────────────────────────────
 
+def normalize_cvss_score(value):
+    """Return a finite CVSS in [0, 10], or None (booleans are not scores)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        score = float(value)
+    except (ValueError, TypeError, OverflowError):
+        return None
+    return score if math.isfinite(score) and 0 <= score <= 10 else None
+
+
 def _cvss_to_severity(cvss_score):
     """Convierte CVSS score a nivel de severidad."""
+    cvss_score = normalize_cvss_score(cvss_score)
+    if cvss_score is None:
+        return None
     if cvss_score >= 9.0:
         return "CRITICA"
     elif cvss_score >= 7.0:
@@ -53,7 +68,7 @@ def _cvss_to_severity(cvss_score):
         return "MEDIA"
     elif cvss_score > 0:
         return "BAJA"
-    return None
+    return "INFO"
 
 
 # ── Emojis y labels ──────────────────────────────────────────────────────────
@@ -109,32 +124,30 @@ def classify_severity(title, content="", cvss_score=None, iocs=None):
     score = 0
     
     # 1. CVSS Score (señal más fuerte)
-    if cvss_score:
-        cvss_severity = _cvss_to_severity(float(cvss_score))
+    if cvss_score is not None:
+        cvss_severity = _cvss_to_severity(cvss_score)
         if cvss_severity:
             return cvss_severity  # CVSS es definitivo si existe
     
     # 2. Keywords de severidad
     for keyword in CRITICAL_KEYWORDS:
-        if keyword in text:
+        if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', text):
             score += 10
     
     for keyword in HIGH_KEYWORDS:
-        if keyword in text:
+        if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', text):
             score += 5
     
     for keyword in MEDIUM_KEYWORDS:
-        if keyword in text:
+        if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', text):
             score += 2
     
     for keyword in LOW_KEYWORDS:
-        if keyword in text:
+        if re.search(r'(?<!\w)' + re.escape(keyword) + r'(?!\w)', text):
             score -= 3
     
     # 3. Presencia de IoCs (aumenta severidad)
     if iocs:
-        if "cve" in iocs:
-            score += 5 * len(iocs["cve"])
         if "ipv4" in iocs or "domain" in iocs:
             score += 3
         if "sha256" in iocs or "md5" in iocs:
@@ -142,8 +155,12 @@ def classify_severity(title, content="", cvss_score=None, iocs=None):
     
     # 4. Señales contextuales
     # Múltiples CVEs = más severo
-    cve_count = len(re.findall(r'CVE-\d{4}-\d+', text, re.IGNORECASE))
-    score += cve_count * 3
+    cve_pattern = r'\bCVE-\d{4}-\d{4,}\b'
+    cves = {c.upper() for c in re.findall(cve_pattern, text, re.IGNORECASE)}
+    if iocs:
+        cves.update(c.upper() for c in iocs.get("cve", [])
+                    if isinstance(c, str) and re.fullmatch(cve_pattern, c, re.IGNORECASE))
+    score += len(cves) * 5  # Count each CVE once across title, content and IoCs.
     
     # Convertir score a severidad
     if score >= 15:

@@ -2,5 +2,26 @@ name = "dev101_bot"
 main = "api/webhook.js"
 compatibility_date = "2025-01-01"
 
+# Configure secrets separately in each environment (never commit their values):
+# TELEGRAM_WEBHOOK_SECRET, TELEGRAM_TOKEN_ENV, GH_PAT_ENV,
+# TELEGRAM_CHAT_ID_ENV; optionally TELEGRAM_USER_ID_ENV (positive numeric ID).
+# Set Telegram setWebhook.secret_token to the same TELEGRAM_WEBHOOK_SECRET.
+[[durable_objects.bindings]]
+name = "WEBHOOK_STATE"
+class_name = "WebhookState"
+
+[[migrations]]
+tag = "v1-webhook-state"
+new_sqlite_classes = ["WebhookState"]
+
 [env.production]
 workers_dev = true
+
+# Bindings do not inherit from the default environment.
+[[env.production.durable_objects.bindings]]
+name = "WEBHOOK_STATE"
+class_name = "WebhookState"
+
+[[env.production.migrations]]
+tag = "v1-webhook-state"
+new_sqlite_classes = ["WebhookState"]

@@ -4,6 +4,8 @@
 
 import re
 import logging
+import json
+from pathlib import Path
 
 # Cliente compartido con rotación de keys: si la key #1 agota su cuota diaria
 # (TPD), el tagger rota igual que el resumidor en vez de fallar todo el run.
@@ -11,108 +13,21 @@ from groq_rotation import GROQ_API_KEYS, GROQ_PRIMARY_MODEL, NVIDIA_API_KEY, gro
 
 logger = logging.getLogger(__name__)
 
-# ── Diccionario de las técnicas MITRE ATT&CK más comunes ─────────────────────
-# Solo incluimos las más frecuentes en noticias para validación
-KNOWN_TECHNIQUES = {
-    # Initial Access
-    "T1566": "Phishing",
-    "T1566.001": "Spearphishing Attachment",
-    "T1566.002": "Spearphishing Link",
-    "T1190": "Exploit Public-Facing Application",
-    "T1133": "External Remote Services",
-    "T1078": "Valid Accounts",
-    "T1195": "Supply Chain Compromise",
-    "T1195.002": "Compromise Software Supply Chain",
-    "T1199": "Trusted Relationship",
-    # Execution
-    "T1059": "Command and Scripting Interpreter",
-    "T1059.001": "PowerShell",
-    "T1059.003": "Windows Command Shell",
-    "T1059.005": "Visual Basic",
-    "T1059.007": "JavaScript",
-    "T1204": "User Execution",
-    "T1204.001": "Malicious Link",
-    "T1204.002": "Malicious File",
-    "T1203": "Exploitation for Client Execution",
-    # Persistence
-    "T1547": "Boot or Logon Autostart Execution",
-    "T1547.001": "Registry Run Keys / Startup Folder",
-    "T1053": "Scheduled Task/Job",
-    "T1136": "Create Account",
-    "T1098": "Account Manipulation",
-    # Privilege Escalation
-    "T1068": "Exploitation for Privilege Escalation",
-    "T1548": "Abuse Elevation Control Mechanism",
-    "T1548.002": "Bypass UAC",
-    # Defense Evasion
-    "T1562": "Impair Defenses",
-    "T1562.001": "Disable or Modify Tools",
-    "T1070": "Indicator Removal",
-    "T1027": "Obfuscated Files or Information",
-    "T1036": "Masquerading",
-    "T1140": "Deobfuscate/Decode Files",
-    "T1112": "Modify Registry",
-    # Credential Access
-    "T1003": "OS Credential Dumping",
-    "T1110": "Brute Force",
-    "T1555": "Credentials from Password Stores",
-    "T1528": "Steal Application Access Token",
-    "T1557": "Adversary-in-the-Middle",
-    # Discovery
-    "T1082": "System Information Discovery",
-    "T1083": "File and Directory Discovery",
-    "T1046": "Network Service Discovery",
-    "T1018": "Remote System Discovery",
-    # Lateral Movement
-    "T1021": "Remote Services",
-    "T1021.001": "Remote Desktop Protocol",
-    "T1021.002": "SMB/Windows Admin Shares",
-    "T1534": "Internal Spearphishing",
-    # Collection
-    "T1005": "Data from Local System",
-    "T1114": "Email Collection",
-    "T1113": "Screen Capture",
-    "T1560": "Archive Collected Data",
-    # Command and Control
-    "T1071": "Application Layer Protocol",
-    "T1071.001": "Web Protocols",
-    "T1105": "Ingress Tool Transfer",
-    "T1572": "Protocol Tunneling",
-    "T1090": "Proxy",
-    "T1573": "Encrypted Channel",
-    # Exfiltration
-    "T1041": "Exfiltration Over C2 Channel",
-    "T1567": "Exfiltration Over Web Service",
-    "T1048": "Exfiltration Over Alternative Protocol",
-    # Impact
-    "T1486": "Data Encrypted for Impact",  # Ransomware
-    "T1489": "Service Stop",
-    "T1490": "Inhibit System Recovery",
-    "T1498": "Network Denial of Service",
-    "T1499": "Endpoint Denial of Service",
-    "T1529": "System Shutdown/Reboot",
-    "T1485": "Data Destruction",
-    "T1491": "Defacement",
-    "T1565": "Data Manipulation",
-}
-
-# Mapeo de tácticas
-TACTICS = {
-    "TA0001": "Initial Access",
-    "TA0002": "Execution",
-    "TA0003": "Persistence",
-    "TA0004": "Privilege Escalation",
-    "TA0005": "Defense Evasion",
-    "TA0006": "Credential Access",
-    "TA0007": "Discovery",
-    "TA0008": "Lateral Movement",
-    "TA0009": "Collection",
-    "TA0010": "Exfiltration",
-    "TA0011": "Command and Control",
-    "TA0040": "Impact",
-    "TA0042": "Resource Development",
-    "TA0043": "Reconnaissance",
-}
+# Complete versioned Enterprise catalog, including historical/revoked IDs.
+# Catalog membership validates IDs/names, not whether a TTP occurred in an article.
+try:
+    ATTACK_CATALOG = json.loads(Path(__file__).with_name("attack_catalog.json").read_text(encoding="utf-8"))
+    KNOWN_TECHNIQUES = ATTACK_CATALOG["techniques"]
+    TACTICS = ATTACK_CATALOG["tactics"]
+    if (ATTACK_CATALOG["domain"] != "enterprise-attack" or not ATTACK_CATALOG["attack_version"] or
+            not isinstance(KNOWN_TECHNIQUES, dict) or len(KNOWN_TECHNIQUES) < 600 or
+            len(KNOWN_TECHNIQUES) != ATTACK_CATALOG["technique_count"] or
+            any(not re.fullmatch(r'T\d{4}(?:\.\d{3})?', key) or not isinstance(name, str) or not name
+                for key, name in KNOWN_TECHNIQUES.items())):
+        raise ValueError("invalid Enterprise catalog")
+except (OSError, ValueError, KeyError, TypeError):
+    logger.error("MITRE: catalog unavailable/invalid; abstaining from tagging")
+    ATTACK_CATALOG, KNOWN_TECHNIQUES, TACTICS = {}, {}, {}
 
 MITRE_SYSTEM_PROMPT = """Eres un analista de inteligencia de amenazas (CTI) especializado en el framework MITRE ATT&CK.
 
@@ -140,7 +55,7 @@ def tag_ttps(title, content=""):
     Clasifica TTPs MITRE ATT&CK de una noticia usando Groq.
     Retorna lista de dicts con id y nombre, o lista vacía.
     """
-    if not GROQ_API_KEYS and not NVIDIA_API_KEY:
+    if not KNOWN_TECHNIQUES or (not GROQ_API_KEYS and not NVIDIA_API_KEY):
         return []
 
     text = f"Título: {title}\nContenido: {content[:3000]}"
@@ -163,10 +78,11 @@ def tag_ttps(title, content=""):
 
         response = r.choices[0].message.content.strip()
         
-        if "NONE" in response.upper():
+        if response.upper() == "NONE":
             return []
         
         ttps = []
+        seen = set()
         for line in response.split("\n"):
             line = line.strip()
             if not line:
@@ -176,15 +92,12 @@ def tag_ttps(title, content=""):
             match = re.match(r'(T\d{4}(?:\.\d{3})?)\s*[-–—:]\s*(.+)', line)
             if match:
                 tech_id = match.group(1)
-                tech_name = match.group(2).strip()
-                
-                # Validar contra diccionario local
-                if tech_id in KNOWN_TECHNIQUES:
-                    tech_name = KNOWN_TECHNIQUES[tech_id]  # Usar nombre oficial
-                
+                if tech_id not in KNOWN_TECHNIQUES or tech_id in seen:
+                    continue
+                seen.add(tech_id)
                 ttps.append({
                     "id": tech_id,
-                    "name": tech_name,
+                    "name": KNOWN_TECHNIQUES[tech_id],
                 })
         
         if ttps:

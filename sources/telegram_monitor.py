@@ -4,9 +4,10 @@
 # No requiere Telethon, cuenta de API ni API key.
 
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
-from sources.rss_feeds import scraper, HEADERS
+from sources.rss_feeds import scraper, HEADERS, parse_date
 
 logger = logging.getLogger(__name__)
 
@@ -28,17 +29,22 @@ MAX_AGE_DAYS = 3          # los canales TI publican seguido; ventana corta
 ITEMS_PER_CHANNEL = 3
 
 
-def _is_recent(dt, max_age_days=MAX_AGE_DAYS):
+def _is_recent(dt, max_age_days=MAX_AGE_DAYS, *, now=None):
     if dt is None:
         return True  # si no hay fecha, no descartamos
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    return now - dt < timedelta(days=max_age_days)
+    return now - timedelta(days=max_age_days) <= dt.astimezone(timezone.utc) <= now
 
 
-def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL):
-    """Lee el preview web público de un canal y devuelve los últimos mensajes."""
+def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL, *, now=None):
+    """Retain undated messages; skip malformed dates/records independently."""
+    if limit <= 0:
+        return []
+    now = now or datetime.now(timezone.utc)
     url = TME_PREVIEW_URL.format(channel=channel)
     try:
         r = scraper.get(url, headers=HEADERS, timeout=15)
@@ -56,46 +62,39 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL):
             if len(items) >= limit:
                 break
 
-            text_el = msg.select_one("div.tgme_widget_message_text")
-            text = text_el.get_text(separator=" ", strip=True) if text_el else ""
-            if not text:
-                continue
+            try:
+                text_el = msg.select_one("div.tgme_widget_message_text")
+                text = text_el.get_text(separator=" ", strip=True) if text_el else ""
+                if not text:
+                    continue
+                if len(text) < 70 and not re.search(r'cve-\d{4}-\d+|https?://|vulnerab|malware|exploit|breach|patch|zero-day|0-day|ransomware|security|\bia\b|\bai\b', text, re.I):
+                    continue
 
-            # Descartar mensajes cortos de chat casual (memes, comentarios de una frase)
-            if len(text) < 70 and not re.search(r'cve-\d{4}-\d+|https?://|vulnerab|malware|exploit|breach|patch|zero-day|0-day|ransomware|security|ia|ai', text, re.I):
-                continue
+                date_link = msg.select_one("a.tgme_widget_message_date")
+                link = date_link.get("href", "").strip() if date_link else ""
+                if not link:
+                    logger.warning("Telegram (%s): invalid message link", source_name)
+                    continue
 
+                time_el = msg.select_one("time[datetime]")
+                date_str = time_el.get("datetime", "") if time_el else ""
+                pub_dt = parse_date(date_str)
+                if date_str and pub_dt is None:
+                    logger.warning("Telegram (%s): invalid message date", source_name)
+                    continue
+                if not _is_recent(pub_dt, now=now):
+                    continue
 
-            # Enlace permanente al mensaje
-            link = ""
-            date_link = msg.select_one("a.tgme_widget_message_date")
-            if date_link and date_link.has_attr("href"):
-                link = date_link["href"].strip()
-            if not link:
-                continue
-
-            # Fecha del mensaje (para filtrar por recencia)
-            pub_dt = None
-            time_el = msg.select_one("time[datetime]")
-            if time_el and time_el.has_attr("datetime"):
-                try:
-                    pub_dt = datetime.fromisoformat(time_el["datetime"])
-                except ValueError:
-                    pub_dt = None
-
-            if not _is_recent(pub_dt):
-                continue
-
-            # Telegram no tiene títulos: usamos la primera línea / primeros ~120 chars
-            first_line = text.split("\n")[0].strip()
-            title = (first_line[:117] + "...") if len(first_line) > 120 else first_line
-
-            items.append({
-                "title": title,
-                "link": link,
-                "source": source_name,
-                "content": text,
-            })
+                first_line = text.split("\n")[0].strip()
+                title = (first_line[:117] + "...") if len(first_line) > 120 else first_line
+                items.append({
+                    "title": title,
+                    "link": link,
+                    "source": source_name,
+                    "content": text,
+                })
+            except Exception as e:
+                logger.warning("Telegram (%s): invalid message (%s)", source_name, type(e).__name__)
 
         return items
 
@@ -104,12 +103,13 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL):
         return []
 
 
-def scrape_telegram_channels():
+def scrape_telegram_channels(*, now=None):
     """Monitorea canales públicos de Telegram via su preview web oficial."""
     all_items = []
+    now = now or datetime.now(timezone.utc)
     for ch_info in TELEGRAM_CHANNELS:
         source_name = f"TG: {ch_info['name']}"
-        items = _scrape_channel(ch_info["channel"], source_name)
+        items = _scrape_channel(ch_info["channel"], source_name, now=now)
         all_items.extend(items)
 
     logger.info(f"Telegram Monitor: {len(all_items)} items totales de {len(TELEGRAM_CHANNELS)} canales")

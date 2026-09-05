@@ -1,0 +1,18 @@
+[run]
+branch = True
+source = .
+omit =
+    tests/*
+    test_*.py
+    tools/*
+    .venv/*
+    venv/*
+
+[report]
+show_missing = True
+fail_under = 80
+include =
+    run_job.py
+    groq_rotation.py
+    sources/*.py
+    intelligence/*.py

@@ -36,7 +36,7 @@ def scrape_greynoise_trends():
                 "label": "IPs Maliciosas (24h)",
             },
             {
-                "query": 'tags:"CVE*" last_seen:1d',
+                "query": 'classification:malicious tags:"CVE*" last_seen:1d',
                 "label": "CVEs Explotados Activamente",
             },
         ]
@@ -63,7 +63,11 @@ def scrape_greynoise_trends():
                     continue
                 
                 data = r.json()
-                count = data.get("count", 0)
+                if (not isinstance(data, dict) or type(data.get("count")) is not int or
+                        data["count"] < 0 or not isinstance(data.get("data"), list)):
+                    logger.error("GreyNoise GNQL: invalid API response")
+                    continue
+                count = data["count"]
                 
                 if count > 0:
                     # Generar una noticia sobre la actividad detectada
@@ -71,14 +75,22 @@ def scrape_greynoise_trends():
                     top_cves = set()
                     
                     for entry in data.get("data", [])[:10]:
+                        if not isinstance(entry, dict) or not isinstance(entry.get("tags", []), list):
+                            logger.warning("GreyNoise GNQL: invalid record")
+                            continue
                         for tag in entry.get("tags", []):
+                            if isinstance(tag, dict):
+                                tag = tag.get("name")
+                            if not isinstance(tag, str):
+                                logger.warning("GreyNoise GNQL: invalid tag")
+                                continue
                             if tag.startswith("CVE"):
                                 top_cves.add(tag)
                             else:
                                 top_tags.add(tag)
                     
-                    tags_str = ", ".join(list(top_tags)[:5]) if top_tags else "N/A"
-                    cves_str = ", ".join(list(top_cves)[:5]) if top_cves else "N/A"
+                    tags_str = ", ".join(sorted(top_tags)[:5]) if top_tags else "N/A"
+                    cves_str = ", ".join(sorted(top_cves)[:5]) if top_cves else "N/A"
                     
                     content = (
                         f"GreyNoise detectó {count} IPs con actividad maliciosa en las últimas 24h.\n"
@@ -132,6 +144,9 @@ def _fallback_community_lookup():
                 
                 if r.status_code == 200:
                     data = r.json()
+                    if not isinstance(data, dict) or data.get("classification") not in {"malicious", "benign", "unknown"}:
+                        logger.error("GreyNoise Community: invalid API response")
+                        continue
                     if data.get("classification") == "malicious" and data.get("last_seen", ""):
                         name = data.get("name", "Unknown")
                         noise = data.get("noise", False)
@@ -141,7 +156,12 @@ def _fallback_community_lookup():
                             'source': 'GreyNoise',
                             'content': f"IP: {ip}\nClasificación: Maliciosa\nNombre: {name}\nRuido: {'Sí' if noise else 'No'}",
                         })
-            except:
+                elif r.status_code == 404:
+                    logger.info("GreyNoise Community: IP not observed")
+                else:
+                    logger.error("GreyNoise Community Error: Status %s", r.status_code)
+            except Exception as exc:
+                logger.error("GreyNoise Community lookup error: %s", type(exc).__name__)
                 continue
         
         return items

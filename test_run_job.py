@@ -1,6 +1,6 @@
 import unittest
 from unittest.mock import patch, MagicMock
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import run_job
 import groq_rotation
 # is_recent vive en sources/rss_feeds.py tras el refactor a módulos
@@ -33,7 +33,7 @@ class TestRunJob(unittest.TestCase):
 
     def test_is_recent_spanish(self):
         # Generar una fecha reciente en español
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         meses_inv = {
             1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
             5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
@@ -47,7 +47,7 @@ class TestRunJob(unittest.TestCase):
         self.assertFalse(is_recent(fecha_vieja))
 
     def test_is_recent_iso(self):
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         fecha_reciente = now.strftime("%Y-%m-%d")
         self.assertTrue(is_recent(fecha_reciente))
         
@@ -56,7 +56,7 @@ class TestRunJob(unittest.TestCase):
 
     def test_is_recent_rfc822(self):
         # Formato RSS: "Sat, 02 May 2026 12:00:00 +0000"
-        now = datetime.now()
+        now = datetime.now(timezone.utc)
         fecha_rfc = now.strftime("%a, %d %b %Y %H:%M:%S +0000")
         self.assertTrue(is_recent(fecha_rfc))
         
@@ -79,20 +79,6 @@ class TestRunJob(unittest.TestCase):
         # ...pero la palabra completa sí debe activar la categoría
         self.assertEqual(run_job.detectar_categoria("La IA generativa transforma el sector", "Unknown Source"), "IA")
         self.assertEqual(run_job.detectar_categoria("Detectado nuevo grupo APT en Europa", "Unknown Source"), "Ciberseguridad")
-
-    def test_scraper_structure(self):
-        # Test para verificar que el contrato de datos se mantiene
-        # (Aunque el scraping falle, la estructura debe ser consistente)
-        sample_item = {
-            'title': 'Test Title',
-            'link': 'https://example.com',
-            'source': 'Test Source'
-        }
-        # Validamos que los campos necesarios existen
-        self.assertIn('title', sample_item)
-        self.assertIn('link', sample_item)
-        self.assertIn('source', sample_item)
-
 
 class TestClasificacion(unittest.TestCase):
     """El clasificador viejo era 'primer match gana' con IA evaluada ANTES que
@@ -464,8 +450,7 @@ class TestDiversidad(unittest.TestCase):
             {"source": "A", "title": "a3"}, {"source": "B", "title": "b1"},
         ]
         result = run_job.interleave_by_source(items)
-        # El primer y segundo item deben ser de fuentes distintas (round-robin)
-        self.assertNotEqual(result[0]["source"], result[1]["source"])
+        self.assertEqual(result, [items[0], items[3], items[1], items[2]])
 
     def test_diversidad_primer_item_siempre_pasa(self):
         # En un run vacío, el FLOOR garantiza que cualquier medio entre.

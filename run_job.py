@@ -3,6 +3,7 @@
 
 import os, re, time, logging, json, base64, requests
 from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 from dotenv import load_dotenv
 
 # Cargar variables de entorno desde .env si existe (local)
@@ -192,6 +193,12 @@ def get_github_file():
                 logger.error(f"Error 401: El token no es válido o no tiene permisos para {GITHUB_REPO}")
                 return None, None  # error de auth: no tiene sentido reintentar
             elif r.status_code == 404:
+                # GitHub also hides inaccessible private repositories behind 404.
+                repo = requests.get(
+                    f"https://api.github.com/repos/{GITHUB_REPO}",
+                    headers=headers, timeout=15,
+                )
+                repo.raise_for_status()
                 logger.info(f"Archivo {GITHUB_FILE} no encontrado. Se creará uno nuevo.")
                 return [], None
 
@@ -204,22 +211,38 @@ def get_github_file():
                 # como vacío republicaría todo y SOBREESCRIBIRÍA el historial.
                 if data.get("size", 0) > 0:
                     raw_r = requests.get(
-                        url,
+                        f"https://api.github.com/repos/{GITHUB_REPO}/git/blobs/{data['sha']}",
                         headers={**headers, "Accept": "application/vnd.github.raw+json"},
                         timeout=30,
                     )
                     raw_r.raise_for_status()
                     raw = raw_r.content.decode("utf-8").strip()
-                    return json.loads(raw) if raw else [], data.get("sha")
-                return [], data.get("sha")
-
-            raw = base64.b64decode(content).decode("utf-8").strip()
-            return json.loads(raw) if raw else [], data["sha"]
+                else:
+                    raw = ""
+            else:
+                raw = base64.b64decode("".join(content.split()), validate=True).decode("utf-8").strip()
+            noticias = json.loads(raw) if raw else []
+            if not isinstance(noticias, list) or any(not isinstance(n, dict) for n in noticias):
+                raise ValueError("El historial debe ser una lista de objetos")
+            for n in noticias:
+                delivery = n.get("telegram")
+                if delivery is not None and (
+                    not isinstance(delivery, dict)
+                    or delivery.get("status") not in {"pending", "sending", "sent", "failed", "uncertain"}
+                    or not isinstance(delivery.get("attempts", 0), int)
+                    or delivery.get("attempts", 0) < 0
+                    or (delivery.get("status") != "sent" and not isinstance(delivery.get("text"), str))
+                ):
+                    raise ValueError("Estado de entrega invalido")
+            if not isinstance(data.get("sha"), str) or not data["sha"]:
+                raise ValueError("GitHub no devolvio SHA")
+            return noticias, data["sha"]
         except Exception as e:
-            last_error = e
+            last_error = type(e).__name__
             wait = 2 ** attempt  # 2s, 4s, 8s
-            logger.warning(f"GitHub lectura intento {attempt}/{GITHUB_MAX_RETRIES} falló ({e}). Reintentando en {wait}s...")
-            time.sleep(wait)
+            logger.warning("GitHub lectura intento %s/%s fallo (%s)", attempt, GITHUB_MAX_RETRIES, last_error)
+            if attempt < GITHUB_MAX_RETRIES:
+                time.sleep(wait)
 
     logger.error(f"Error leyendo noticias.json en GitHub tras {GITHUB_MAX_RETRIES} intentos: {last_error}")
     return None, None
@@ -530,7 +553,9 @@ def deduplicar_noticias(noticias):
     df = _df_nombres_propios(noticias)
     kept, eliminadas = [], []
     for n in noticias:
-        if any(son_duplicadas(n, k, df=df) for k in kept):
+        # Never discard a queued or unresolved delivery during history cleanup.
+        unresolved = n.get("telegram", {}).get("status", "sent") != "sent"
+        if not unresolved and any(son_duplicadas(n, k, df=df) for k in kept):
             eliminadas.append(n)
         else:
             kept.append(n)
@@ -563,13 +588,11 @@ def build_noticia(item, titulo, resumen, categoria, noticias_actuales,
     }
 
 def commit_noticias(noticias, sha, nuevas=0):
-    """Escribe noticias.json en GitHub en un ÚNICO commit por run."""
+    """Persist a snapshot using compare-and-swap; return its new SHA or fail closed."""
     token = GIT_TOKEN.strip()
     if not token:
-        logger.error("GIT_TOKEN no configurado: no se puede commitear noticias.json")
-        return False
+        raise RuntimeError("GIT_TOKEN no configurado")
 
-    noticias = noticias[:2000]
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
     payload = {
         "message": f"feat: add {nuevas} news items ({datetime.now(timezone.utc):%Y-%m-%d %H:%M} UTC)",
@@ -580,17 +603,29 @@ def commit_noticias(noticias, sha, nuevas=0):
     if sha:  # omitir sha solo si el archivo no existía (404)
         payload["sha"] = sha
 
-    try:
-        r = requests.put(url, headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github.v3+json"
-        }, json=payload, timeout=15)
-        r.raise_for_status()
-        logger.info(f"✅ noticias.json actualizado en GitHub ({len(noticias)} items totales)")
-        return True
-    except Exception as e:
-        logger.error(f"Error commit GitHub: {e}")
-        return False
+    for attempt in range(3):
+        retryable = True
+        try:
+            r = requests.put(url, headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github.v3+json"
+            }, json=payload, timeout=15)
+            retryable = r.status_code == 429 or r.status_code >= 500
+            r.raise_for_status()
+            new_sha = r.json().get("content", {}).get("sha")
+            if isinstance(new_sha, str) and new_sha:
+                return new_sha
+            retryable = True
+        except (requests.RequestException, ValueError) as exc:
+            logger.warning("GitHub escritura fallo (%s)", type(exc).__name__)
+
+        # A timed-out PUT may already have committed. Reconcile before retrying.
+        current, current_sha = get_github_file()
+        if current is not None and current == noticias and current_sha:
+            return current_sha
+        if current is None or current_sha != sha or not retryable or attempt == 2:
+            raise RuntimeError("No se pudo persistir el historial; no se continuara enviando")
+        time.sleep(2 ** (attempt + 1))
 
 # ── Logic ─────────────────────────────────────────────────────────────────────
 
@@ -877,27 +912,86 @@ Si NO cumple criterios: responde ÚNICAMENTE 'RECHAZAR'."""},
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
 def send_to_telegram(message):
+    """Return a delivery outcome; never retry a possibly accepted request."""
     token = TELEGRAM_TOKEN.strip()
     if token.lower().startswith("bot"):
         token = token[3:]
-    
+    if not token or not TELEGRAM_CHAT_ID:
+        return {"status": "failed", "error": "missing_configuration"}
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message,
                "parse_mode": "Markdown", "disable_web_page_preview": False}
+    if len(message.encode("utf-16-le")) > 8192:
+        payload["text"] = message.encode("utf-16-le")[:8186].decode("utf-16-le", errors="ignore") + "..."
+        payload.pop("parse_mode")
     try:
         r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 400:
-            # Markdown inválido (la IA puede generar '_', '*' o '[' sueltos que
-            # rompen parse_mode): reintentar en texto plano para no perder el envío.
-            logger.warning(f"Telegram 400 (Markdown inválido), reintentando sin formato: {r.text}")
-            payload.pop("parse_mode")
+        data = r.json()
+        if (r.status_code == 400 and data.get("ok") is False
+                and "parse_mode" in payload
+                and "parse entities" in str(data.get("description", "")).lower()):
+            payload.pop("parse_mode", None)
             r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            logger.error(f"Telegram Error {r.status_code}: {r.text}")
-        else:
-            logger.info(f"Telegram: {r.status_code}")
-    except Exception as e:
-        logger.error(f"Error Telegram: {e}")
+            data = r.json()
+        if r.status_code == 200 and data.get("ok") is True:
+            message_id = data.get("result", {}).get("message_id")
+            if isinstance(message_id, int) and not isinstance(message_id, bool) and message_id > 0:
+                return {"status": "sent", "message_id": message_id}
+        if data.get("ok") is False:
+            outcome = {"status": "failed", "error": f"telegram_http_{r.status_code}"}
+            retry_after = data.get("parameters", {}).get("retry_after")
+            if isinstance(retry_after, int) and not isinstance(retry_after, bool) and retry_after > 0:
+                outcome["retry_at"] = time.time() + retry_after
+            return outcome
+        return {"status": "uncertain", "error": "unconfirmed_response"}
+    except requests.ConnectTimeout:
+        return {"status": "failed", "error": "connect_timeout"}
+    except (requests.RequestException, ValueError, TypeError, AttributeError) as exc:
+        # Exception strings may contain the bot token in the request URL.
+        logger.error("Telegram respuesta no confirmada (%s)", type(exc).__name__)
+        return {"status": "uncertain", "error": "unconfirmed_transport"}
+
+
+def deliver_pending(noticias, sha):
+    """Drain the durable outbox oldest-first. Legacy records are already sent.
+
+    A crash after `sending` is persisted is ambiguous: manual reconciliation is
+    required, since Telegram sendMessage has no idempotency key.
+    """
+    for noticia in reversed(noticias):
+        delivery = noticia.get("telegram")
+        if delivery is None or delivery["status"] == "sent":
+            continue
+        if delivery["status"] == "sending":
+            delivery.update(status="uncertain", error="interrupted_delivery")
+            sha = commit_noticias(noticias, sha)
+        if delivery["status"] == "uncertain":
+            logger.error("Entrega incierta id=%s; revisar Telegram e historial", noticia.get("id"))
+            raise RuntimeError(f"Entrega incierta de noticia {noticia.get('id')}; revisar Telegram antes de reintentar")
+        if delivery.get("attempts", 0) >= 5:
+            logger.error("Entrega agotada id=%s; requiere revision", noticia.get("id"))
+            raise RuntimeError(f"Entrega agotada de noticia {noticia.get('id')}; requiere revision")
+        if delivery.get("retry_at", 0) > time.time():
+            raise RuntimeError("Telegram solicito esperar antes del proximo intento")
+
+        # Unique ownership prevents two writers from reconciling the same claim.
+        delivery.update(status="sending", attempts=delivery.get("attempts", 0) + 1,
+                        attempt_id=uuid4().hex)
+        delivery.pop("retry_at", None)
+        delivery.pop("error", None)
+        sha = commit_noticias(noticias, sha)
+        outcome = send_to_telegram(delivery["text"])
+        delivery.update(outcome)
+        if delivery["status"] == "sent":
+            delivery["sent_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            delivery.pop("text", None)
+        sha = commit_noticias(noticias, sha)
+        if delivery["status"] != "sent":
+            logger.error("Entrega %s id=%s error=%s", delivery["status"], noticia.get("id"), delivery.get("error"))
+            raise RuntimeError(f"Entrega {delivery['status']} de noticia {noticia.get('id')}")
+        time.sleep(3)
+    return sha
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
@@ -909,16 +1003,18 @@ def job():
     # vacío republicaría todo (causa del incidente de duplicados tipo YAMCS).
     noticias_existentes, sha = get_github_file()
     if noticias_existentes is None:
-        logger.error("No se pudo leer noticias.json (fallo de red/auth). "
-                     "Abortando el run para NO republicar duplicados.")
-        return
+        raise RuntimeError("No se pudo leer noticias.json; se aborta para evitar duplicados")
+
+    if not TELEGRAM_TOKEN.strip() or not TELEGRAM_CHAT_ID.strip():
+        raise RuntimeError("Falta configurar Telegram")
+    sha = deliver_pending(noticias_existentes, sha)
 
     # Estructuras de deduplicación (3 capas)
     published_links = {n.get("enlace_original", "") for n in noticias_existentes}
     claves_publicadas = {n.get("dedup_key", "") for n in noticias_existentes if n.get("dedup_key")}
     logger.info(f"URLs ya publicadas: {len(published_links)} | claves de contenido: {len(claves_publicadas)}")
 
-    # Copia de trabajo que se commiteará UNA sola vez al final
+    # Stage new records before any external delivery.
     noticias_actualizadas = list(noticias_existentes)
 
     # ── FASE 1: Recolección de todas las fuentes ──────────────────────────────
@@ -1072,7 +1168,10 @@ def job():
         iocs_text = format_iocs_telegram(iocs)
         
         # Clasificar TTPs MITRE
-        ttps = tag_ttps(titulo_ai, resumen_ai)
+        ttps = []
+        if llamadas_ia < MAX_LLAMADAS_IA:
+            llamadas_ia += 1
+            ttps = tag_ttps(titulo_ai, resumen_ai)
         ttps_text = format_ttps_telegram(ttps)
         
         # Clasificar severidad
@@ -1103,16 +1202,12 @@ def job():
         
         final_message = "\n".join(msg_parts)
         
-        # ── Distribución ──────────────────────────────────────────────────────
-
-        # Telegram
-        send_to_telegram(final_message)
-
-        # GitHub: construir en memoria, commitear UNA vez al final del run
+        # Outbox: persist the prepared message before attempting delivery.
         nueva = build_noticia(
             item, titulo_ai, resumen_ai, categoria, noticias_actualizadas,
             severity=severity, ttps=ttps, iocs=iocs, dedup_key=dedup_key,
         )
+        nueva["telegram"] = {"status": "pending", "text": final_message, "attempts": 0}
         noticias_actualizadas.insert(0, nueva)
 
         # Actualizar estructuras de dedup en memoria para el resto del run
@@ -1122,7 +1217,6 @@ def job():
 
         medio_counts[medio] = medio_counts.get(medio, 0) + 1
         count += 1
-        time.sleep(3)
 
     # ── Dedup retroactivo ─────────────────────────────────────────────────────
     # Limpia duplicados de alta confianza que se hayan colado en el historial
@@ -1140,17 +1234,33 @@ def job():
     if len(recats) > 20:
         logger.info(f"[Recategoriza] ... y {len(recats) - 20} más")
 
-    # ── Commit único + resumen del run ────────────────────────────────────────
+    # Keep unresolved delivery records even when trimming the public history.
+    retained = []
+    historical = 0
+    for noticia in noticias_actualizadas:
+        if noticia.get("telegram", {}).get("status", "sent") != "sent":
+            retained.append(noticia)
+        elif historical < 2000:
+            retained.append(noticia)
+            historical += 1
+    noticias_actualizadas = retained
+
+    # ── Persistencia + distribucion + resumen ─────────────────────────────────
     if count == 0 and not dups and not recats:
         logger.info("Sin noticias nuevas, duplicados ni categorías que corregir.")
         logger.info(f"=== Resumen descartes: {drop_stats} ===")
         return
 
-    commit_noticias(noticias_actualizadas, sha, nuevas=count)
+    sha = commit_noticias(noticias_actualizadas, sha, nuevas=count)
+    deliver_pending(noticias_actualizadas, sha)
     logger.info("=== Job completado ===")
     logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)} | dups eliminados: {len(dups)}"
                 f" | recategorizadas: {len(recats)}")
     logger.info(f"Descartes: {drop_stats}")
 
 if __name__ == "__main__":
-    job()
+    try:
+        job()
+    except Exception as exc:
+        logger.error("Job fallido (%s); revisar estados persistentes y logs anteriores", type(exc).__name__)
+        raise SystemExit(1) from None
