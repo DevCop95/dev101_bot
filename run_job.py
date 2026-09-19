@@ -64,6 +64,34 @@ def clean_markdown(text):
     return re.sub(r'\*+', '', text).strip()
 
 
+def smart_truncate_title(text, max_len=80):
+    """Trunca el título a un máximo de caracteres respetando los límites de palabra y sin terminar en conectores."""
+    if not text or len(text) <= max_len:
+        return (text or "").strip()
+    truncated = text[:max_len].rstrip()
+    if " " in truncated:
+        candidate = truncated.rsplit(" ", 1)[0].rstrip(" ,;:-—")
+        trailing_stop = {
+            "de", "del", "en", "con", "por", "para", "y", "o", "a", "la", "el", "los", "las",
+            "un", "una", "the", "in", "on", "at", "to", "for", "with", "by", "of", "and", "or",
+            "tras", "sobre", "ante", "bajo", "desde", "hacia", "hasta", "sin"
+        }
+        words = candidate.split()
+        while words and words[-1].lower() in trailing_stop:
+            words.pop()
+        if words:
+            return " ".join(words)
+    return truncated
+
+
+def is_offtopic_candidate(title, content=""):
+    """Pre-filtro rápido para descartar entradas claramente no técnicas sin gastar llamadas a la IA."""
+    lower_title = (title or "").lower()
+    if "friday squid blogging" in lower_title:
+        return True
+    return False
+
+
 def parse_news_response(response):
     """Parsea la respuesta de resumen sin inventar contenido faltante.
 
@@ -107,7 +135,7 @@ def parse_news_response(response):
 
     resumen_ai = " ".join(resumen_parts).strip()
     if titulo_ai and resumen_ai and titulo_ai.casefold() != resumen_ai.casefold():
-        return titulo_ai[:80].rstrip(), resumen_ai
+        return smart_truncate_title(titulo_ai, 80), resumen_ai
 
     # Si hubo etiquetas pero falta un campo, la respuesta está incompleta.
     if saw_label:
@@ -118,7 +146,7 @@ def parse_news_response(response):
     # sola línea: una línea no contiene suficiente información para publicar.
     lines = [clean_markdown(line.strip()) for line in response.splitlines() if line.strip()]
     if len(lines) >= 2:
-        return lines[0][:80].rstrip(), " ".join(lines[1:]).strip()
+        return smart_truncate_title(lines[0], 80), " ".join(lines[1:]).strip()
 
     logger.warning("Respuesta IA sin formato publicable: solo contiene una línea")
     return None, None
@@ -766,6 +794,7 @@ _IA_DEBIL_RE = _re_keywords(_IA_DEBIL)
 CATEGORIA_POR_MEDIO = {
     "CyberSecurity News": "Ciberseguridad",
     "WeLiveSecurity": "Ciberseguridad",
+    "INCIBE-CERT": "Ciberseguridad",
     "DragonJAR": "Ciberseguridad",
     "El Lado Del Mal": "Ciberseguridad",
     "Una al Día (Hispasec)": "Ciberseguridad",
@@ -777,6 +806,10 @@ CATEGORIA_POR_MEDIO = {
     "SANS ISC": "Ciberseguridad",
     "The Record": "Ciberseguridad",
     "Wired Security": "Ciberseguridad",
+    "CISA Advisories": "Ciberseguridad",
+    "Unit 42": "Ciberseguridad",
+    "Cisco Talos": "Ciberseguridad",
+    "Microsoft Security": "Ciberseguridad",
     "NVD (NIST)": "Ciberseguridad",
     "Exploit-DB": "Ciberseguridad",
     "Vulners": "Ciberseguridad",
@@ -784,6 +817,7 @@ CATEGORIA_POR_MEDIO = {
     "Telegram": "Ciberseguridad",   # los 5 canales monitorizados son de threat intel
     "IA en Español": "IA",
     "Xataka IA": "IA",
+    "Hugging Face": "IA",
 }
 
 def categoria_de_fuente(source):
@@ -1197,6 +1231,12 @@ def _process_news(noticias_existentes, sha):
 
 
         logger.info(f"Procesando [{medio}] {item['title']}")
+
+        # Pre-filtro rápido para descartar entradas no técnicas sin gastar cuota IA
+        if is_offtopic_candidate(item['title'], item.get('content', '')):
+            drop_stats["ia_rechazo"] += 1
+            logger.info(f"Noticia descartada por pre-filtro off-topic: {item['title']}")
+            continue
 
         # ── Resumen y filtro de relevancia con Groq ───────────────────────────
         llamadas_ia += 1

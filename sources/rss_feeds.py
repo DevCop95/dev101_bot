@@ -247,13 +247,31 @@ def scrape_therecord():
 def scrape_wired_security():
     return scrape_rss_feed("https://www.wired.com/feed/category/security/latest/rss", "Wired Security")
 
+def scrape_incibe_cert():
+    return scrape_rss_feed("https://www.incibe-cert.es/alerta-temprana/avisos-seguridad/feed", "INCIBE-CERT")
+
+def scrape_cisa_advisories():
+    return scrape_rss_feed("https://www.cisa.gov/cybersecurity-advisories/all.xml", "CISA Advisories")
+
+def scrape_unit42():
+    return scrape_rss_feed("https://unit42.paloaltonetworks.com/feed/", "Unit 42")
+
+def scrape_cisco_talos():
+    return scrape_rss_feed("https://blog.talosintelligence.com/rss/", "Cisco Talos")
+
+def scrape_microsoft_security():
+    return scrape_rss_feed("https://www.microsoft.com/en-us/security/blog/feed/", "Microsoft Security")
+
 # ── AI Sources ────────────────────────────────────────────────────────────────
 
 def scrape_ia_en_espanol():
-    return scrape_rss2json("https://iaenespanol.substack.com/feed", "IA en Español")
+    return scrape_rss2json("https://iaenespanol.substack.com/feed", "IA en Español", max_age_days=7)
 
 def scrape_xataka_ia():
     return scrape_rss_feed("https://www.xataka.com/tag/inteligencia-artificial/rss2.xml", "Xataka IA")
+
+def scrape_huggingface():
+    return scrape_rss_feed("https://huggingface.co/blog/feed.xml", "Hugging Face")
 
 
 # ── Aggregated function ──────────────────────────────────────────────────────
@@ -261,6 +279,7 @@ def scrape_xataka_ia():
 ALL_RSS_SCRAPERS = [
     scrape_cybersecurity_news,
     scrape_welivesecurity,
+    scrape_incibe_cert,
     scrape_dragonjar,
     scrape_el_lado_del_mal,
     scrape_unaaldia,
@@ -272,6 +291,11 @@ ALL_RSS_SCRAPERS = [
     scrape_sans_isc,
     scrape_therecord,
     scrape_wired_security,
+    scrape_cisa_advisories,
+    scrape_unit42,
+    scrape_cisco_talos,
+    scrape_microsoft_security,
     scrape_ia_en_espanol,
     scrape_xataka_ia,
+    scrape_huggingface,
 ]
