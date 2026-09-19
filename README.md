@@ -128,7 +128,7 @@ dev101_bot/
 ├── .github/workflows/bot.yml      # GitHub Actions (cron + dispatch)
 ├── api/webhook.js                  # Cloudflare Worker — Telegram webhook
 ├── sources/                        # Módulos de recolección
-│   ├── rss_feeds.py                # 15 fuentes RSS (ES + EN)
+│   ├── rss_feeds.py                # 21 fuentes RSS (ES + EN)
 │   ├── nvd_cve.py                  # NVD CVE API 2.0 (NIST)
 │   ├── exploitdb.py                # Exploit-DB RSS; helper Vulners no conectado
 │   ├── greynoise.py                # GreyNoise Community API
@@ -160,6 +160,7 @@ dev101_bot/
 |--------|-----------|--------|
 | CyberSecurity News | Ciberseguridad / IA | 🇪🇸 |
 | WeLiveSecurity (ESET) | Ciberseguridad | 🇪🇸 |
+| INCIBE-CERT | Ciberseguridad | 🇪🇸 |
 | DragonJAR | Ciberseguridad | 🇪🇸 |
 | El Lado Del Mal | Ciberseguridad | 🇪🇸 |
 | Una al Día (Hispasec) | Ciberseguridad | 🇪🇸 |
@@ -171,8 +172,13 @@ dev101_bot/
 | SANS ISC | Ciberseguridad | 🇬🇧 (auto-traducido) |
 | The Record | Ciberseguridad | 🇬🇧 (auto-traducido) |
 | Wired Security | Ciberseguridad | 🇬🇧 (auto-traducido) |
-| IA en Español (Substack) | IA | 🇪🇸 |
+| CISA Advisories | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Unit 42 (Palo Alto) | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Cisco Talos | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| Microsoft Security | Ciberseguridad | 🇬🇧 (auto-traducido) |
+| IA en Español (Substack) | IA | 🇪🇸 (ventana semanal 7d) |
 | Xataka IA | IA | 🇪🇸 |
+| Hugging Face Blog | IA | 🇬🇧 (auto-traducido) |
 
 ### APIs de Inteligencia
 
@@ -200,16 +206,17 @@ Vulners conserva un helper probado, pero no está conectado al job porque su API
 
 Cada noticia pasa por este pipeline:
 
-1. **Recolección** → RSS, APIs, Telegram channels
-2. **Filtro de relevancia** → Groq (modelo configurable por `GROQ_MODEL`)
-3. **Resumen IA** → Estilo analista CTI senior
-4. **Extracción IoCs** → URLs, IPs públicas normalizadas, dominios, hashes y CVEs, incluyendo indicadores defanged. Una coincidencia no demuestra maliciosidad.
-5. **Clasificación MITRE** → IDs y nombres del catálogo Enterprise ATT&CK v17.1, incluyendo históricos. IDs desconocidos se descartan; la inferencia del modelo no es evidencia confirmada.
-6. **Severidad** → 🔴 Crítica / 🟠 Alta / 🟡 Media / 🟢 Baja / 🔵 Info
-7. **Deduplicación** → Similitud Jaccard + URLs ya publicadas
-8. **Persistencia** → GitHub `noticias.json` en la rama `bot-state`, mensaje preparado en estado `pending`
-9. **Distribución** → Reserva `sending`, envío a Telegram y confirmación `sent` con `message_id`
-10. **Publicación web** → Una instantánea en `main/noticias.json`, sin estados intermedios
+1. **Recolección** → 21 feeds RSS/Atom, APIs especializadas y canales de Telegram (con ventana ampliada a 7 días para boletines semanales en Substack).
+2. **Pre-filtro Off-Topic** → Descarte inmediato por regex de entradas no técnicas (ahorro de cuota Groq).
+3. **Filtro de relevancia** → Groq (modelo configurable por `GROQ_MODEL`)
+4. **Resumen IA y Truncado Inteligente** → Estilo analista CTI senior con recorte adaptativo a palabras completas (`smart_truncate_title` ≤ 80 caracteres).
+5. **Extracción IoCs** → URLs, IPs públicas normalizadas, dominios, hashes y CVEs, incluyendo indicadores defanged. Una coincidencia no demuestra maliciosidad.
+6. **Clasificación MITRE** → IDs y nombres del catálogo Enterprise ATT&CK v17.1, incluyendo históricos. IDs desconocidos se descartan; la inferencia del modelo no es evidencia confirmada.
+7. **Severidad** → 🔴 Crítica / 🟠 Alta / 🟡 Media / 🟢 Baja / 🔵 Info
+8. **Deduplicación** → Similitud Jaccard + URLs ya publicadas
+9. **Persistencia** → GitHub `noticias.json` en la rama `bot-state`, mensaje preparado en estado `pending`
+10. **Distribución** → Reserva `sending`, envío a Telegram y confirmación `sent` con `message_id`
+11. **Publicación web** → Una instantánea en `main/noticias.json`, sin estados intermedios
 
 La utilidad `iocs_to_stix()` está disponible y probada, pero el job no exporta bundles STIX automáticamente. RSS y Telegram comparan timestamps completos en UTC: se rechazan fechas futuras o inválidas y se conservan entradas sin fecha.
 
