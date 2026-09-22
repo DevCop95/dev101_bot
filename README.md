@@ -209,7 +209,7 @@ Cada noticia pasa por este pipeline:
 1. **Recolección** → 21 feeds RSS/Atom, APIs especializadas y canales de Telegram (con ventana ampliada a 7 días para boletines semanales en Substack).
 2. **Pre-filtro Off-Topic** → Descarte inmediato por regex de entradas no técnicas (ahorro de cuota Groq).
 3. **Filtro de relevancia** → Groq (modelo configurable por `GROQ_MODEL`)
-4. **Resumen IA y Truncado Inteligente** → Estilo analista CTI senior con recorte adaptativo a palabras completas (`smart_truncate_title` ≤ 80 caracteres).
+4. **Resumen IA y Truncado Inteligente** → Estilo analista CTI senior con recorte adaptativo a palabras completas y preservación de términos compuestos (`smart_truncate_title` ≤ 100 caracteres).
 5. **Extracción IoCs** → URLs, IPs públicas normalizadas, dominios, hashes y CVEs, incluyendo indicadores defanged. Una coincidencia no demuestra maliciosidad.
 6. **Clasificación MITRE** → IDs y nombres del catálogo Enterprise ATT&CK v17.1, incluyendo históricos. IDs desconocidos se descartan; la inferencia del modelo no es evidencia confirmada.
 7. **Severidad** → 🔴 Crítica / 🟠 Alta / 🟡 Media / 🟢 Baja / 🔵 Info

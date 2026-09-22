@@ -17,7 +17,8 @@ CRITICAL_KEYWORDS = [
     "nation-state", "estado-nación", "critical infrastructure",
     "infraestructura crítica", "data breach", "brecha de datos",
     "millions", "millones", "billions", "ransomware attack",
-    "ataque ransomware", "nuclear", "gobierno", "government",
+    "ataque ransomware", "nuclear", "ataque a gobierno", "government breach",
+    "gobierno comprometido", "espionaje gubernamental", "ciberataque estatal",
 ]
 
 HIGH_KEYWORDS = [
@@ -32,7 +33,7 @@ MEDIUM_KEYWORDS = [
     "phishing", "spam", "scam", "estafa", "trojan", "troyano",
     "spyware", "adware", "patch", "parche", "update", "actualización",
     "advisory", "aviso", "warning", "alerta", "risk", "riesgo",
-    "information disclosure", "divulgación de información",
+    "information disclosure", "divulgación de información", "gobierno", "government",
 ]
 
 LOW_KEYWORDS = [

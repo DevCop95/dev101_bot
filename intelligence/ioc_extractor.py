@@ -47,15 +47,25 @@ PATTERNS = {
     ),
 }
 
-# Dominios a excluir (legítimos que aparecen en noticias)
+# Dominios a excluir (legítimos que aparecen en noticias y plataformas de fuentes)
 DOMAIN_WHITELIST = {
+    # Redes y Big Tech
     "google.com", "twitter.com", "x.com", "github.com", "microsoft.com",
     "apple.com", "amazon.com", "facebook.com", "instagram.com", "youtube.com",
     "linkedin.com", "wikipedia.org", "reddit.com", "cloudflare.com",
-    "telegram.org", "t.me", "whatsapp.com", "xataka.com", "bleepingcomputer.com",
-    "thehackernews.com", "krebsonsecurity.com", "darkreading.com",
-    "welivesecurity.com", "schneier.com", "wired.com", "nvd.nist.gov",
+    "telegram.org", "t.me", "whatsapp.com",
+    # Fuentes y Medios de Ciberseguridad / IA
+    "xataka.com", "bleepingcomputer.com", "thehackernews.com", "krebsonsecurity.com",
+    "darkreading.com", "welivesecurity.com", "schneier.com", "wired.com", "nvd.nist.gov",
     "exploit-db.com", "greynoise.io", "cve.mitre.org", "cybersecuritynews.es",
+    "incibe-cert.es", "incibe.es", "cisa.gov", "paloaltonetworks.com", "unit42.paloaltonetworks.com",
+    "talosintelligence.com", "cisco.com", "huggingface.co", "dragonjar.org", "elladodelmal.com",
+    "unaaldia.hispasec.com", "hispasec.com", "therecord.media", "sans.edu", "isc.sans.edu",
+    "substack.com", "iaenespanol.substack.com",
+    # CDNs y servicios auxiliares legítimos comunes en feeds
+    "0xword.com", "mypublicinbox.com", "blogger.com", "1.bp.blogspot.com", "blogspot.com",
+    "googleusercontent.com", "feedburner.com", "github.io", "githubusercontent.com",
+    "medium.com", "picsum.photos", "unsplash.com",
 }
 
 
@@ -70,8 +80,20 @@ def _is_private_ip(ip):
             getattr(address, "is_site_local", False))
 
 
-def _is_whitelisted(host):
+def _extract_source_domain(source_url):
+    if not source_url or not isinstance(source_url, str):
+        return None
+    try:
+        parsed = urlsplit(source_url)
+        return parsed.hostname.lower().rstrip(".") if parsed.hostname else None
+    except Exception:
+        return None
+
+
+def _is_whitelisted(host, extra_domain=None):
     host = host.lower().rstrip(".")
+    if extra_domain and (host == extra_domain or host.endswith("." + extra_domain)):
+        return True
     return any(host == domain or host.endswith("." + domain) for domain in DOMAIN_WHITELIST)
 
 
@@ -86,13 +108,15 @@ def _defang_ioc(ioc, ioc_type):
     return ioc
 
 
-def extract_iocs(text):
+def extract_iocs(text, source_url=None):
     """
     Extrae todos los IoCs de un texto.
     Retorna dict con categorías y listas de IoCs encontrados.
+    Si se proporciona source_url, excluye dinámicamente el dominio de la propia fuente.
     """
     if not text:
         return {}
+    source_domain = _extract_source_domain(source_url)
     text = re.sub(r'hxxps?', lambda match: "https" if match[0].lower() == "hxxps" else "http", text, flags=re.I)
     for defanged, plain in (("[.]", "."), ("(.)", "."), ("{.}", "."), ("[:]", ":"), ("[@]", "@")):
         text = text.replace(defanged, plain)
@@ -108,7 +132,7 @@ def extract_iocs(text):
                 matches = {ip.rstrip(".") for ip in matches}
             matches = {str(ipaddress.ip_address(ip)) for ip in matches if not _is_private_ip(ip)}
         elif ioc_type == "domain":
-            matches = {d.lower() for d in matches if not _is_whitelisted(d)}
+            matches = {d.lower() for d in matches if not _is_whitelisted(d, extra_domain=source_domain)}
         elif ioc_type == "url":
             urls = set()
             for url in matches:
@@ -116,7 +140,7 @@ def extract_iocs(text):
                 try:
                     parsed = urlsplit(url)
                     host = parsed.hostname
-                    if not host or _is_whitelisted(host):
+                    if not host or _is_whitelisted(host, extra_domain=source_domain):
                         continue
                     parsed.port  # Reject malformed ports as well as malformed IPv6 brackets.
                     try:

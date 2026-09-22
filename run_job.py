@@ -64,24 +64,62 @@ def clean_markdown(text):
     return re.sub(r'\*+', '', text).strip()
 
 
-def smart_truncate_title(text, max_len=80):
-    """Trunca el título a un máximo de caracteres respetando los límites de palabra y sin terminar en conectores."""
-    if not text or len(text) <= max_len:
-        return (text or "").strip()
-    truncated = text[:max_len].rstrip()
+_COMPOUND_PREFIXES = {
+    "puerta", "inyeccion", "inyección", "denegacion", "denegación",
+    "escalada", "cadena", "ejecucion", "ejecución", "codigo", "código",
+    "dia", "día", "zero", "suplantacion", "suplantación",
+}
+
+_TRAILING_STOP = {
+    # Preposiciones y artículos en español
+    "de", "del", "en", "con", "por", "para", "y", "o", "e", "u", "a", "al", "la", "el", "los", "las",
+    "un", "una", "unos", "unas", "tras", "sobre", "ante", "bajo", "desde", "hacia", "hasta", "sin",
+    "contra", "mediante", "entre", "segun", "según",
+    # Pronombres y determinantes
+    "su", "sus", "este", "esta", "estos", "estas", "ese", "esa", "esos", "esas", "le", "les", "se",
+    # Conjunciones y relativos
+    "que", "pero", "sino", "como", "cuando", "donde", "cual", "cuales", "cuyo", "cuya", "cuyos", "cuyas", "ni",
+    # Verbos auxiliares o conectores que dejan la idea inconclusa
+    "permite", "permiten", "permite a", "usando", "logra", "logran", "afecta", "afectan", "deja", "dejan",
+    # Inglés
+    "the", "in", "on", "at", "to", "for", "with", "by", "of", "and", "or", "a", "an", "is", "are",
+    "from", "into", "as", "that", "which", "who", "using", "allows", "allowing"
+}
+
+
+def smart_truncate_title(text, max_len=100, add_ellipsis=True):
+    """Trunca el título respetando los límites de palabra y sin terminar en conectores ni términos cortados.
+
+    - Permite una tolerancia suave si el texto excede ligeramente max_len para no amputar una última palabra clave.
+    - Si se corta, evita terminar en preposiciones, artículos, conjunciones o términos compuestos a medias (ej. 'puerta').
+    - Agrega puntos suspensivos (...) solo si hubo truncado real.
+    """
+    if not text:
+        return ""
+    text = text.strip()
+    if len(text) <= max_len:
+        return text
+
+    # Si excede ligeramente (hasta 6 caracteres) y termina limpiamente, preferir conservarlo completo
+    if len(text) <= max_len + 6 and not any(text.lower().endswith(" " + s) for s in _TRAILING_STOP):
+        return text
+
+    ellipsis = "..." if add_ellipsis else ""
+    target_len = max(20, max_len - len(ellipsis))
+    truncated = text[:target_len].rstrip()
+
     if " " in truncated:
-        candidate = truncated.rsplit(" ", 1)[0].rstrip(" ,;:-—")
-        trailing_stop = {
-            "de", "del", "en", "con", "por", "para", "y", "o", "a", "la", "el", "los", "las",
-            "un", "una", "the", "in", "on", "at", "to", "for", "with", "by", "of", "and", "or",
-            "tras", "sobre", "ante", "bajo", "desde", "hacia", "hasta", "sin"
-        }
+        candidate = truncated.rsplit(" ", 1)[0].rstrip(" ,;:-—.")
         words = candidate.split()
-        while words and words[-1].lower() in trailing_stop:
+
+        # Limpiar palabras finales que sean conectores o términos compuestos incompletos
+        while words and (words[-1].lower() in _TRAILING_STOP or words[-1].lower() in _COMPOUND_PREFIXES):
             words.pop()
+
         if words:
-            return " ".join(words)
-    return truncated
+            return " ".join(words).rstrip(" ,;:-—.") + ellipsis
+
+    return truncated + ellipsis
 
 
 def is_offtopic_candidate(title, content=""):
@@ -135,7 +173,7 @@ def parse_news_response(response):
 
     resumen_ai = " ".join(resumen_parts).strip()
     if titulo_ai and resumen_ai and titulo_ai.casefold() != resumen_ai.casefold():
-        return smart_truncate_title(titulo_ai, 80), resumen_ai
+        return smart_truncate_title(titulo_ai, 100), resumen_ai
 
     # Si hubo etiquetas pero falta un campo, la respuesta está incompleta.
     if saw_label:
@@ -146,7 +184,7 @@ def parse_news_response(response):
     # sola línea: una línea no contiene suficiente información para publicar.
     lines = [clean_markdown(line.strip()) for line in response.splitlines() if line.strip()]
     if len(lines) >= 2:
-        return smart_truncate_title(lines[0], 80), " ".join(lines[1:]).strip()
+        return smart_truncate_title(lines[0], 100), " ".join(lines[1:]).strip()
 
     logger.warning("Respuesta IA sin formato publicable: solo contiene una línea")
     return None, None
@@ -961,7 +999,7 @@ RECHAZAR si:
 - Tutoriales básicos de programación
 
 Si cumple criterios: responde EN ESPAÑOL con este formato exacto:
-TÍTULO: [Título impactante de máximo 80 caracteres, estilo briefing de inteligencia]
+TÍTULO: [Título impactante y conciso, idealmente de 70 a 95 caracteres (máximo 100), con sentido completo y autocontenido, sin cortar oraciones subordinadas ni términos compuestos (ej. 'puerta trasera', 'ejecución remota'), estilo briefing de inteligencia]
 RESUMEN: [Resumen técnico de máximo 2 frases. Incluye impacto real, vectores de ataque si aplica, y contexto relevante. Habla como analista, no como periodista.]
 SECTOR: [Sector afectado: Gobierno, Finanzas, Salud, Tecnología, Telecomunicaciones, Energía, Educación, Todos, N/A]
 
@@ -1267,7 +1305,7 @@ def _process_news(noticias_existentes, sha):
         
         # Extraer IoCs
         full_text = f"{item['title']} {item.get('content', '')} {titulo_ai} {resumen_ai}"
-        iocs = extract_iocs(full_text)
+        iocs = extract_iocs(full_text, source_url=item.get('link'))
         iocs_text = format_iocs_telegram(iocs)
         
         # Clasificar TTPs MITRE

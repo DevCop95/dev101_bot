@@ -31,6 +31,33 @@ class TestRunJob(unittest.TestCase):
             ("Inyección SQL en Contact Form 7", "La vulnerabilidad permite inyección SQL remota en el plugin."),
         )
 
+    def test_smart_truncate_title_preserves_short(self):
+        title = "Inyección SQL en plugin de WordPress"
+        self.assertEqual(run_job.smart_truncate_title(title, max_len=100), title)
+
+    def test_smart_truncate_title_meta_muse_puerta_trasera(self):
+        # Caso real reportado por el usuario: un titular de 83 caracteres no debe cortarse en 'puerta'
+        title = "Vulnerabilidad oculta en Meta Muse permite convertir el asistente en puerta trasera"
+        self.assertEqual(run_job.smart_truncate_title(title, max_len=100), title)
+
+    def test_smart_truncate_title_cleans_compound_prefixes_and_connectors(self):
+        # Si tiene que truncar forzosamente, no debe dejar 'puerta', 'en', 'para', etc. colgados
+        title = "Vulnerabilidad crítica en Meta Muse permite convertir el asistente en puerta trasera mediante exploit"
+        # Forzar un max_len que caería justo en 'puerta' (ej. 75 caracteres)
+        truncated = run_job.smart_truncate_title(title, max_len=75)
+        self.assertTrue(truncated.endswith("..."))
+        self.assertNotIn("en puerta...", truncated)
+        self.assertNotIn("puerta...", truncated)
+        self.assertTrue(truncated.startswith("Vulnerabilidad crítica en Meta Muse permite convertir el asistente"))
+
+    def test_smart_truncate_title_strips_trailing_stopwords(self):
+        title = "Nueva alerta de seguridad para sistemas que"
+        # max_len que corta en 'que' o 'para'
+        truncated = run_job.smart_truncate_title(title, max_len=40)
+        self.assertFalse(truncated.endswith(" que..."))
+        self.assertFalse(truncated.endswith(" para..."))
+        self.assertTrue(truncated.endswith("..."))
+
     def test_is_recent_spanish(self):
         # Generar una fecha reciente en español
         now = datetime.now(timezone.utc)

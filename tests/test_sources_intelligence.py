@@ -474,6 +474,12 @@ class SeverityTests(OfflineTest):
         self.assertEqual(severity.SEVERITY_CONFIG["CRITICA"]["label"], "CR\u00cdTICA")
         self.assertEqual(severity.get_severity_label("ALTA"), "\U0001f7e0 ALTA")
 
+    def test_government_mention_not_critical_without_real_attack(self):
+        # Menciones no agresivas a gobierno no deben disparar severidad CRÍTICA
+        self.assertNotEqual(severity.classify_severity("Guía de ciberseguridad del gobierno para pymes"), "CRITICA")
+        # Ataques reales a gobierno sí escalan a CRÍTICA
+        self.assertEqual(severity.classify_severity("Ataque a gobierno compromete bases de datos estatales"), "CRITICA")
+
 
 class IocTests(OfflineTest):
     def test_whitelist_uses_actual_hostname_not_query_path_userinfo_or_prefix(self):
@@ -485,6 +491,13 @@ class IocTests(OfflineTest):
         self.assertIn("github.com.evil.net", results["domain"])
         self.assertIn("notgithub.com", results["domain"])
         self.assertNotIn("raw.github.com", results["domain"])
+
+    def test_security_media_and_source_url_excluded_from_iocs(self):
+        text = "Visto en https://unit42.paloaltonetworks.com/post y https://elladodelmal.com/articulo atacando con evil.org"
+        results = ioc.extract_iocs(text, source_url="https://unit42.paloaltonetworks.com/feed")
+        self.assertEqual(results.get("domain"), ["evil.org"])
+        self.assertNotIn("unit42.paloaltonetworks.com", results.get("domain", []))
+        self.assertNotIn("elladodelmal.com", results.get("domain", []))
 
     def test_defanged_urls_domains_ipv4_email_and_hashes(self):
         text = "hxxps[:]//evil[.]net/a 8[.]8[.]8[.]8 hxxp://evil(.)org/b user[@]evil{.}net " + "A" * 64

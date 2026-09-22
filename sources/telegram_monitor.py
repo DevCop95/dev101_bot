@@ -64,7 +64,7 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL, *, now=None):
 
             try:
                 text_el = msg.select_one("div.tgme_widget_message_text")
-                text = text_el.get_text(separator=" ", strip=True) if text_el else ""
+                text = text_el.get_text(separator="\n", strip=True) if text_el else ""
                 if not text:
                     continue
                 if len(text) < 70 and not re.search(r'cve-\d{4}-\d+|https?://|vulnerab|malware|exploit|breach|patch|zero-day|0-day|ransomware|security|\bia\b|\bai\b', text, re.I):
@@ -85,8 +85,12 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL, *, now=None):
                 if not _is_recent(pub_dt, now=now):
                     continue
 
-                first_line = text.split("\n")[0].strip()
-                title = (first_line[:117] + "...") if len(first_line) > 120 else first_line
+                first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+                if len(first_line) > 120:
+                    candidate = first_line[:117].rsplit(" ", 1)[0].rstrip(" ,;:-—.")
+                    title = f"{candidate}..." if candidate else (first_line[:117] + "...")
+                else:
+                    title = first_line
                 items.append({
                     "title": title,
                     "link": link,
