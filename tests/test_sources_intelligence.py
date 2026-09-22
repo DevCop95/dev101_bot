@@ -477,8 +477,8 @@ class SeverityTests(OfflineTest):
     def test_government_mention_not_critical_without_real_attack(self):
         # Menciones no agresivas a gobierno no deben disparar severidad CRÍTICA
         self.assertNotEqual(severity.classify_severity("Guía de ciberseguridad del gobierno para pymes"), "CRITICA")
-        # Ataques reales a gobierno sí escalan a CRÍTICA
-        self.assertEqual(severity.classify_severity("Ataque a gobierno compromete bases de datos estatales"), "CRITICA")
+        # Ataques críticos y brechas a gobierno sí escalan a CRÍTICA
+        self.assertEqual(severity.classify_severity("Brecha de datos tras ataque a gobierno"), "CRITICA")
 
 
 class IocTests(OfflineTest):
