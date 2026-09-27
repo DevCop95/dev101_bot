@@ -54,7 +54,8 @@ from sources.telegram_monitor import scrape_telegram_channels
 from intelligence.ioc_extractor import extract_iocs, format_iocs_telegram
 from intelligence.mitre_tagger import tag_ttps, format_ttps_telegram
 from intelligence.severity_classifier import (
-    classify_severity, get_severity_emoji, format_severity_telegram
+    classify_severity, get_severity_emoji, format_severity_telegram,
+    normalize_severity, SEVERITY_CONFIG
 )
 
 
@@ -930,6 +931,9 @@ def reclasificar_noticias(noticias):
         if nueva != antes:
             n["categoria"] = nueva
             cambios.append((n.get("id"), antes, nueva, n.get("titulo", "")))
+        sev_antes = n.get("severidad", "")
+        if not sev_antes or sev_antes not in SEVERITY_CONFIG:
+            n["severidad"] = normalize_severity(sev_antes) if sev_antes else classify_severity(n.get("titulo", ""), n.get("resumen", ""))
     return noticias, cambios
 
 def get_image_url(categoria, used_images=None):
@@ -1317,7 +1321,9 @@ def _process_news(noticias_existentes, sha):
         
         # Clasificar severidad
         cvss_score = item.get('cvss_score')
-        severity = classify_severity(titulo_ai, resumen_ai, cvss_score=cvss_score, iocs=iocs)
+        content_for_severity = f"{resumen_ai} {item.get('title', '')} {item.get('content', '')}"
+        severity = classify_severity(titulo_ai, content_for_severity, cvss_score=cvss_score, iocs=iocs)
+        severity = normalize_severity(severity)
         severity_emoji = get_severity_emoji(severity)
         severity_text = format_severity_telegram(severity)
         

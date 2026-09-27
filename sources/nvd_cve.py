@@ -104,8 +104,10 @@ def _nvd_item(vuln, min_cvss):
                         affected_products.add(f"{parts[3]}:{parts[4]}")
     if affected_products:
         content += f"\n\nProductos afectados: {', '.join(sorted(affected_products)[:5])}"
+    cve_emoji = ("🔴" if cvss_score >= 9 else "🟠" if cvss_score >= 7 else
+                 "🟡" if cvss_score >= 4 else "🟢" if cvss_score > 0 else "🔵")
     return {
-        "title": f"\U0001f534 {cve_id} (CVSS {cvss_score}) \u2014 {cvss_severity}",
+        "title": f"{cve_emoji} {cve_id} (CVSS {cvss_score}) \u2014 {cvss_severity}",
         "link": f"https://nvd.nist.gov/vuln/detail/{cve_id}",
         "source": "NVD (NIST)",
         "content": content,

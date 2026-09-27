@@ -479,6 +479,33 @@ class SeverityTests(OfflineTest):
         self.assertNotEqual(severity.classify_severity("Guía de ciberseguridad del gobierno para pymes"), "CRITICA")
         # Ataques críticos y brechas a gobierno sí escalan a CRÍTICA
         self.assertEqual(severity.classify_severity("Brecha de datos tras ataque a gobierno"), "CRITICA")
+        self.assertEqual(severity.classify_severity("Ataque a gobierno compromete bases de datos estatales"), "CRITICA")
+
+    def test_explicit_severity_keywords(self):
+        self.assertEqual(severity.classify_severity("Vulnerabilidad crítica en Apache"), "CRITICA")
+        self.assertEqual(severity.classify_severity("Critical security flaw in router"), "CRITICA")
+        self.assertEqual(severity.classify_severity("Vulnerabilidad de severidad baja en plugin"), "BAJA")
+        self.assertEqual(severity.classify_severity("Fallo de baja severidad corregido en OpenSSL"), "BAJA")
+
+    def test_unaccented_keywords_match_correctly(self):
+        self.assertEqual(severity.classify_severity("ejecucion remota de codigo"), "ALTA")
+        self.assertEqual(severity.classify_severity("filtracion de datos corporativos"), "ALTA")
+        self.assertEqual(severity.classify_severity("vulnerabilidad critica"), "CRITICA")
+
+    def test_high_impact_threat_classification(self):
+        self.assertEqual(severity.classify_severity("Bypass de autenticación en Palo Alto Networks"), "ALTA")
+        self.assertEqual(severity.classify_severity("Escalada de privilegios en el kernel de Linux"), "ALTA")
+        self.assertEqual(severity.classify_severity("Nueva campaña de ransomware ataca servidores"), "ALTA")
+        self.assertEqual(severity.classify_severity("Botnet masiva infecta miles de dispositivos"), "ALTA")
+
+    def test_normalize_severity_mapping(self):
+        self.assertEqual(severity.normalize_severity("CRITICAL"), "CRITICA")
+        self.assertEqual(severity.normalize_severity("critical"), "CRITICA")
+        self.assertEqual(severity.normalize_severity("HIGH"), "ALTA")
+        self.assertEqual(severity.normalize_severity("MEDIUM"), "MEDIA")
+        self.assertEqual(severity.normalize_severity("LOW"), "BAJA")
+        self.assertEqual(severity.normalize_severity("NONE"), "INFO")
+        self.assertEqual(severity.normalize_severity("unknown"), "INFO")
 
 
 class IocTests(OfflineTest):
