@@ -171,7 +171,10 @@ def smart_truncate_title(text, max_len=115, add_ellipsis=False):
 def is_offtopic_candidate(title, content=""):
     """Pre-filtro rápido para descartar entradas claramente no técnicas sin gastar llamadas a la IA."""
     lower_title = (title or "").lower()
+    lower_content = (content or "").lower()
     if "friday squid blogging" in lower_title:
+        return True
+    if "stormcast" in lower_title and ("podcast" in lower_title or "podcast" in lower_content or "isc.sans.edu/podcastdetail" in lower_content):
         return True
     return False
 
@@ -1299,9 +1302,9 @@ def _process_news(noticias_existentes, sha):
 
     MAX_NOTICIAS = 5
     # Hay una llamada para relevancia/resumen por candidato y otra opcional para
-    # MITRE por noticia publicada. Mantener este límite evita agotar el TPD y
-    # dejar vacíos los runs posteriores.
-    MAX_LLAMADAS_IA = 12
+    # MITRE por noticia publicada. Con 2 keys Groq y fallback NVIDIA funcional,
+    # 18 llamadas permite absorber rechazos sin cortar el run antes de completar el cupo.
+    MAX_LLAMADAS_IA = 18
     llamadas_ia = 0
     count = 0
     medio_counts = {}      # cuántas publicadas por medio (Telegram, Exploit-DB, outlet...)

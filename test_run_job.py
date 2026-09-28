@@ -91,6 +91,11 @@ class TestRunJob(unittest.TestCase):
         act_hist, _ = run_job.reclasificar_noticias(noticias_hist)
         self.assertEqual(act_hist[0]["titulo"], "CEO de Crypto acusa a Corea del Norte de robar $387 M en Bitget y activa fondo de protección")
 
+    def test_is_offtopic_candidate(self):
+        self.assertTrue(run_job.is_offtopic_candidate("Friday Squid Blogging: October"))
+        self.assertTrue(run_job.is_offtopic_candidate("ISC Stormcast For Monday", "podcast https://isc.sans.edu/podcastdetail/10112"))
+        self.assertFalse(run_job.is_offtopic_candidate("Vulnerabilidad crítica en Apache", "Detalles técnicos"))
+
     def test_is_recent_spanish(self):
         # Generar una fecha reciente en español
         now = datetime.now(timezone.utc)

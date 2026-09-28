@@ -49,12 +49,11 @@ _BACKOFF_MAX = 300.0
 GROQ_PRIMARY_MODEL = (os.getenv("GROQ_MODEL") or "").strip() or "openai/gpt-oss-120b"
 GROQ_FALLBACK_MODEL = (os.getenv("GROQ_FALLBACK_MODEL") or "").strip() or "openai/gpt-oss-20b"
 
-# OJO: en integrate.api.nvidia.com solo los Llama 8b/11b responden rápido (<2s
-# medidos); meta/llama-3.2-3b-instruct y nvidia/llama-3.1-nemotron-nano-8b-v1
-# se cuelgan con timeout de más de 60s — no usarlos.
+# OJO: en integrate.api.nvidia.com meta/llama-3.1-8b-instruct fue retirado (410 Gone);
+# se utiliza meta/llama-3.2-11b-vision-instruct que responde de inmediato (<1.5s).
 NVIDIA_API_KEY = (os.getenv("NVIDIA_API_KEY") or "").strip()
 NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
-NVIDIA_MODEL = (os.getenv("NVIDIA_MODEL") or "").strip() or "meta/llama-3.1-8b-instruct"
+NVIDIA_MODEL = (os.getenv("NVIDIA_MODEL") or "").strip() or "meta/llama-3.2-11b-vision-instruct"
 
 
 
@@ -67,7 +66,7 @@ def nvidia_chat(**kwargs):
     """
     if not NVIDIA_API_KEY:
         return None
-    model_name = (os.getenv("NVIDIA_MODEL") or "").strip() or NVIDIA_MODEL or "meta/llama-3.1-8b-instruct"
+    model_name = (os.getenv("NVIDIA_MODEL") or "").strip() or NVIDIA_MODEL or "meta/llama-3.2-11b-vision-instruct"
     payload = dict(kwargs, model=model_name)
     # El fallback Llama no admite los controles de razonamiento de Groq/GPT-OSS.
     payload.pop("reasoning_effort", None)
