@@ -86,6 +86,11 @@ class TestRunJob(unittest.TestCase):
         self.assertFalse(actualizadas[0]["titulo"].endswith("..."))
         self.assertEqual(actualizadas[0]["titulo"], "IA genera informes de vulnerabilidades falsos a gran escala, saturando equipos de respuesta")
 
+        # Verifica que reclasificar_noticias aplique _REFINED_HISTORICAL_TITLES
+        noticias_hist = [{"id": 2822, "titulo": "CEO de Crypto acusa a Corea del Norte de robar $387 M en la plataforma Bitget y activa fondo", "resumen": "Prueba", "categoria": "Ciberseguridad", "fuente": "The Record"}]
+        act_hist, _ = run_job.reclasificar_noticias(noticias_hist)
+        self.assertEqual(act_hist[0]["titulo"], "CEO de Crypto acusa a Corea del Norte de robar $387 M en Bitget y activa fondo de protección")
+
     def test_is_recent_spanish(self):
         # Generar una fecha reciente en español
         now = datetime.now(timezone.utc)

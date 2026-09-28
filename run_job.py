@@ -92,6 +92,17 @@ _EXTRA_DANGLING = {
     "roban", "afectan", "permiten", "mediante", "traves", "través", "robo", "principal"
 }
 
+# Títulos históricos que habían quedado amputados y se restauran con su redacción completa
+_REFINED_HISTORICAL_TITLES = {
+    2822: "CEO de Crypto acusa a Corea del Norte de robar $387 M en Bitget y activa fondo de protección",
+    2820: "Vulnerabilidades críticas en el panel de administración de Microweber permiten carga arbitraria de archivos",
+    2818: "Lunex Stealer explota controlador AMD para desactivar monitoreo de seguridad y evadir EDR",
+    2800: "Vulnerabilidad pre-autenticación SQLi en Roundcube Webmail (CVE-2026-48842) es explotada activamente",
+    2790: "ThreatsDay revela envenenamiento de búsquedas AI y fuga de repositorios por herramientas de IA",
+    2787: "Tres amenazas del verano de 2026: agentes IA, ransomware y ataques a supply chain",
+    2745: "Más de un tercio de empresas industriales sitúan el riesgo cibernético como su principal amenaza",
+}
+
 
 def clean_title(text):
     """Limpia un título eliminando comillas exteriores, puntos suspensivos (...) y colas cortadas."""
@@ -959,13 +970,21 @@ def reclasificar_noticias(noticias):
     """
     cambios = []
     for n in noticias:
-        # Saneamiento retroactivo de títulos con puntos suspensivos o cortados
+        nid = n.get("id")
         tit_orig = n.get("titulo", "")
-        if tit_orig and ("..." in tit_orig or "…" in tit_orig or tit_orig.endswith(".")):
+
+        # Si cuenta con una formulación histórica perfeccionada, aplicarla
+        if nid in _REFINED_HISTORICAL_TITLES:
+            tit_refinado = _REFINED_HISTORICAL_TITLES[nid]
+            if tit_refinado != tit_orig:
+                n["titulo"] = tit_refinado
+                cambios.append((nid, tit_orig, tit_refinado, "titulo_refinado"))
+        elif tit_orig and ("..." in tit_orig or "…" in tit_orig or tit_orig.endswith(".")):
+            # Saneamiento retroactivo de títulos con puntos suspensivos o cortados
             tit_limpio = clean_title(tit_orig)
             if tit_limpio and tit_limpio != tit_orig:
                 n["titulo"] = tit_limpio
-                cambios.append((n.get("id"), tit_orig, tit_limpio, "titulo"))
+                cambios.append((nid, tit_orig, tit_limpio, "titulo"))
 
         antes = n.get("categoria", "")
         nueva = detectar_categoria(n.get("titulo", ""), n.get("fuente", ""), n.get("resumen", ""))
