@@ -43,20 +43,48 @@ class TestRunJob(unittest.TestCase):
     def test_smart_truncate_title_cleans_compound_prefixes_and_connectors(self):
         # Si tiene que truncar forzosamente, no debe dejar 'puerta', 'en', 'para', etc. colgados
         title = "Vulnerabilidad crítica en Meta Muse permite convertir el asistente en puerta trasera mediante exploit"
-        # Forzar un max_len que caería justo en 'puerta' (ej. 75 caracteres)
+        # Por defecto NUNCA debe terminar en puntos suspensivos (...)
         truncated = run_job.smart_truncate_title(title, max_len=75)
-        self.assertTrue(truncated.endswith("..."))
-        self.assertNotIn("en puerta...", truncated)
-        self.assertNotIn("puerta...", truncated)
+        self.assertFalse(truncated.endswith("..."))
+        self.assertNotIn("en puerta", truncated)
+        self.assertNotIn("puerta", truncated.split()[-1:])
         self.assertTrue(truncated.startswith("Vulnerabilidad crítica en Meta Muse permite convertir el asistente"))
+
+        # Si se solicita explícitamente add_ellipsis=True, sí agrega '...'
+        truncated_dots = run_job.smart_truncate_title(title, max_len=75, add_ellipsis=True)
+        self.assertTrue(truncated_dots.endswith("..."))
+        self.assertNotIn("en puerta...", truncated_dots)
+        self.assertNotIn("puerta...", truncated_dots)
 
     def test_smart_truncate_title_strips_trailing_stopwords(self):
         title = "Nueva alerta de seguridad para sistemas que"
-        # max_len que corta en 'que' o 'para'
-        truncated = run_job.smart_truncate_title(title, max_len=40)
-        self.assertFalse(truncated.endswith(" que..."))
-        self.assertFalse(truncated.endswith(" para..."))
-        self.assertTrue(truncated.endswith("..."))
+        # max_len que fuerza corte en conectores/stopwords
+        truncated = run_job.smart_truncate_title(title, max_len=25)
+        self.assertFalse(truncated.endswith(" que"))
+        self.assertFalse(truncated.endswith(" para"))
+        self.assertFalse(truncated.endswith(" de"))
+        self.assertFalse(truncated.endswith("..."))
+
+        # Con add_ellipsis=True
+        truncated_dots = run_job.smart_truncate_title(title, max_len=25, add_ellipsis=True)
+        self.assertFalse(truncated_dots.endswith(" que..."))
+        self.assertFalse(truncated_dots.endswith(" para..."))
+        self.assertFalse(truncated_dots.endswith(" de..."))
+        self.assertTrue(truncated_dots.endswith("..."))
+
+    def test_smart_truncate_title_and_clean_title_strips_trailing_dots(self):
+        # Casos reales donde el modelo devolvió '...' o el corte dejó puntos suspensivos
+        raw = "IA genera informes de vulnerabilidades falsos a gran escala, saturando equipos de respuesta..."
+        cleaned = run_job.clean_title(raw)
+        self.assertFalse(cleaned.endswith("..."))
+        self.assertFalse(cleaned.endswith("."))
+        self.assertEqual(cleaned, "IA genera informes de vulnerabilidades falsos a gran escala, saturando equipos de respuesta")
+
+        # Verifica que reclasificar_noticias limpie títulos con puntos suspensivos
+        noticias = [{"id": 1, "titulo": raw, "resumen": "Resumen técnico de prueba", "categoria": "Ciberseguridad", "fuente": "The Record"}]
+        actualizadas, cambios = run_job.reclasificar_noticias(noticias)
+        self.assertFalse(actualizadas[0]["titulo"].endswith("..."))
+        self.assertEqual(actualizadas[0]["titulo"], "IA genera informes de vulnerabilidades falsos a gran escala, saturando equipos de respuesta")
 
     def test_is_recent_spanish(self):
         # Generar una fecha reciente en español

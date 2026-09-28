@@ -87,22 +87,52 @@ _TRAILING_STOP = {
     "from", "into", "as", "that", "which", "who", "using", "allows", "allowing"
 }
 
+_EXTRA_DANGLING = {
+    "robar", "generan", "desplegar", "ampliacion", "ampliación", "ataques", "herramientas",
+    "roban", "afectan", "permiten", "mediante", "traves", "través", "robo", "principal"
+}
 
-def smart_truncate_title(text, max_len=100, add_ellipsis=True):
+
+def clean_title(text):
+    """Limpia un título eliminando comillas exteriores, puntos suspensivos (...) y colas cortadas."""
+    if not text:
+        return ""
+    text = clean_markdown(text).strip()
+    # Eliminar comillas envolventes añadidas por LLMs
+    text = re.sub(r'^[“"\'«]+|[”"\'»]+$', '', text).strip()
+    # Eliminar puntos suspensivos y signos de puntuación finales
+    text = re.sub(r'[\s.…:;,-]+$', '', text).strip()
+
+    words = text.split()
+    while words and (
+        words[-1].lower() in _TRAILING_STOP
+        or words[-1].lower() in _COMPOUND_PREFIXES
+        or words[-1].lower() in _EXTRA_DANGLING
+    ):
+        words.pop()
+
+    if words:
+        return " ".join(words).rstrip(" ,;:-—.")
+    return text
+
+
+def smart_truncate_title(text, max_len=115, add_ellipsis=False):
     """Trunca el título respetando los límites de palabra y sin terminar en conectores ni términos cortados.
 
+    - Por defecto NUNCA agrega puntos suspensivos (...): los titulares de prensa para
+      web y mensajería deben ser oraciones completas y cerradas, sin cortes con '...'.
     - Permite una tolerancia suave si el texto excede ligeramente max_len para no amputar una última palabra clave.
     - Si se corta, evita terminar en preposiciones, artículos, conjunciones o términos compuestos a medias (ej. 'puerta').
-    - Agrega puntos suspensivos (...) solo si hubo truncado real.
+    - Agrega puntos suspensivos (...) ÚNICAMENTE si add_ellipsis=True fue solicitado de forma explícita.
     """
     if not text:
         return ""
-    text = text.strip()
+    text = clean_title(text)
     if len(text) <= max_len:
         return text
 
-    # Si excede ligeramente (hasta 6 caracteres) y termina limpiamente, preferir conservarlo completo
-    if len(text) <= max_len + 6 and not any(text.lower().endswith(" " + s) for s in _TRAILING_STOP):
+    # Si excede ligeramente (hasta 8 caracteres) y termina limpiamente, preferir conservarlo completo
+    if len(text) <= max_len + 8 and not any(text.lower().endswith(" " + s) for s in _TRAILING_STOP):
         return text
 
     ellipsis = "..." if add_ellipsis else ""
@@ -113,8 +143,12 @@ def smart_truncate_title(text, max_len=100, add_ellipsis=True):
         candidate = truncated.rsplit(" ", 1)[0].rstrip(" ,;:-—.")
         words = candidate.split()
 
-        # Limpiar palabras finales que sean conectores o términos compuestos incompletos
-        while words and (words[-1].lower() in _TRAILING_STOP or words[-1].lower() in _COMPOUND_PREFIXES):
+        # Limpiar palabras finales que sean conectores, prefijos compuestos o términos incompletos
+        while words and (
+            words[-1].lower() in _TRAILING_STOP
+            or words[-1].lower() in _COMPOUND_PREFIXES
+            or words[-1].lower() in _EXTRA_DANGLING
+        ):
             words.pop()
 
         if words:
@@ -158,7 +192,8 @@ def parse_news_response(response):
         upper = line.upper()
         if upper.startswith("TÍTULO:") or upper.startswith("TITULO:"):
             saw_label = True
-            titulo_ai = clean_markdown(line.split(":", 1)[1].strip())
+            raw_title = clean_markdown(line.split(":", 1)[1].strip())
+            titulo_ai = smart_truncate_title(raw_title, max_len=115, add_ellipsis=False)
             in_resumen = False
         elif upper.startswith("RESUMEN:"):
             saw_label = True
@@ -174,7 +209,7 @@ def parse_news_response(response):
 
     resumen_ai = " ".join(resumen_parts).strip()
     if titulo_ai and resumen_ai and titulo_ai.casefold() != resumen_ai.casefold():
-        return smart_truncate_title(titulo_ai, 100), resumen_ai
+        return smart_truncate_title(titulo_ai, max_len=115, add_ellipsis=False), resumen_ai
 
     # Si hubo etiquetas pero falta un campo, la respuesta está incompleta.
     if saw_label:
@@ -185,7 +220,7 @@ def parse_news_response(response):
     # sola línea: una línea no contiene suficiente información para publicar.
     lines = [clean_markdown(line.strip()) for line in response.splitlines() if line.strip()]
     if len(lines) >= 2:
-        return smart_truncate_title(lines[0], 100), " ".join(lines[1:]).strip()
+        return smart_truncate_title(lines[0], max_len=115, add_ellipsis=False), " ".join(lines[1:]).strip()
 
     logger.warning("Respuesta IA sin formato publicable: solo contiene una línea")
     return None, None
@@ -916,16 +951,22 @@ def detectar_categoria(title, source, resumen=""):
     return "Ciberseguridad" if sec >= ia else "IA"
 
 def reclasificar_noticias(noticias):
-    """Recalcula la categoría del historial con las reglas actuales.
+    """Recalcula la categoría del historial con las reglas actuales y sanea títulos defectuosos.
 
-    Las categorías se asignaron con clasificadores previos y quedaron congeladas en
-    noticias.json; sin esta pasada, arreglar `detectar_categoria` solo corrige las
-    noticias FUTURAS. Devuelve (noticias, cambios) con cambios = [(id, antes, después, título)].
-    No toca `url_imagen` (la imagen se eligió por la categoría vieja, pero refrescarla
-    costaría una llamada a Unsplash por noticia).
+    - Sanea títulos del historial que terminen con puntos suspensivos (...) o términos cortados.
+    - Recalcula la categoría del historial con las reglas actuales.
+    - Normaliza la severidad si falta o no es estándar.
     """
     cambios = []
     for n in noticias:
+        # Saneamiento retroactivo de títulos con puntos suspensivos o cortados
+        tit_orig = n.get("titulo", "")
+        if tit_orig and ("..." in tit_orig or "…" in tit_orig or tit_orig.endswith(".")):
+            tit_limpio = clean_title(tit_orig)
+            if tit_limpio and tit_limpio != tit_orig:
+                n["titulo"] = tit_limpio
+                cambios.append((n.get("id"), tit_orig, tit_limpio, "titulo"))
+
         antes = n.get("categoria", "")
         nueva = detectar_categoria(n.get("titulo", ""), n.get("fuente", ""), n.get("resumen", ""))
         if nueva != antes:
@@ -1003,11 +1044,13 @@ RECHAZAR si:
 - Tutoriales básicos de programación
 
 Si cumple criterios: responde EN ESPAÑOL con este formato exacto:
-TÍTULO: [Título impactante y conciso, idealmente de 70 a 95 caracteres (máximo 100), con sentido completo y autocontenido, sin cortar oraciones subordinadas ni términos compuestos (ej. 'puerta trasera', 'ejecución remota'), estilo briefing de inteligencia]
+TÍTULO: [Titular conciso y de alto impacto de entre 60 y 85 caracteres (MÁXIMO 95). Debe ser una frase cerrada con sentido completo y estilo briefing CTI. PROHIBIDO terminantemente usar puntos suspensivos (...) o dejar oraciones cortadas a medias. Sin comillas ni emojis.]
 RESUMEN: [Resumen técnico de máximo 2 frases. Incluye impacto real, vectores de ataque si aplica, y contexto relevante. Habla como analista, no como periodista.]
 SECTOR: [Sector afectado: Gobierno, Finanzas, Salud, Tecnología, Telecomunicaciones, Energía, Educación, Todos, N/A]
 
-Si el contenido original está en inglés, tradúcelo al español manteniendo términos técnicos en inglés cuando sea estándar (e.g., zero-day, ransomware, phishing).
+REGLAS CRÍTICAS DE CALIDAD:
+1. El TÍTULO NUNCA debe terminar en puntos suspensivos ('...') ni puntos finales. Debe ser un titular de prensa cerrado, directo y completo de menos de 95 caracteres.
+2. Si el contenido original está en inglés, tradúcelo al español manteniendo términos técnicos en inglés cuando sea estándar (e.g., zero-day, ransomware, phishing).
 
 Si NO cumple criterios: responde ÚNICAMENTE 'RECHAZAR'."""},
                 {"role": "user", "content": f"Título original: {title}\nContenido: {content}"}
