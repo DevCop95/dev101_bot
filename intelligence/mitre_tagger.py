@@ -123,14 +123,3 @@ def format_ttps_telegram(ttps):
         lines.append(f"⚔️ `{ttp['id']}` — {ttp['name']}")
     
     return "\n".join(lines)
-
-
-def format_ttps_twitter(ttps):
-    """
-    Formatea TTPs para tweet (versión corta).
-    """
-    if not ttps:
-        return ""
-    
-    ids = [ttp['id'] for ttp in ttps[:3]]
-    return " ".join(f"#{tid.replace('.', '_')}" for tid in ids)

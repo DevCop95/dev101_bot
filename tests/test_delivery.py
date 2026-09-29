@@ -222,7 +222,37 @@ class DeliveryTests(unittest.TestCase):
         self.stored = [{"id": 1, "telegram": {"status": "failed", "text": "test", "attempts": 5}}]
         with self.assertRaisesRegex(RuntimeError, "agotada"):
             run_job.job()
-        self.assertEqual(self.telegram_calls, [])
+        # The exhausted record is never resent, but it no longer blocks new news.
+        self.assertNotIn("test", [call["text"] for call in self.telegram_calls])
+        self.assertEqual(len(self.telegram_calls), 1)
+        self.assertEqual(self.stored[-1]["telegram"]["attempts"], 5)
+        self.assertEqual(self.stored[0]["telegram"]["status"], "sent")
+
+    def test_stuck_uncertain_record_does_not_block_other_deliveries(self):
+        self.stored = [{"id": 1, "telegram": {"status": "uncertain", "text": "test", "attempts": 1}}]
+        with self.assertRaisesRegex(RuntimeError, "incierta"):
+            run_job.job()
+        self.assertEqual([call["text"] for call in self.telegram_calls if call["text"] == "test"], [])
+        self.assertEqual(self.stored[0]["telegram"]["status"], "sent")
+        self.assertEqual(self.stored[-1]["telegram"]["status"], "uncertain")
+        self.assertEqual(len(self.public), 1)
+
+    def test_telegram_failure_stops_drain_and_keeps_new_news_queued(self):
+        self.stored = [{"id": 1, "telegram": {"status": "pending", "text": "old", "attempts": 0}}]
+        self.telegram_response = response(500, {"ok": False, "description": "down"})
+        with self.assertRaises(RuntimeError):
+            run_job.job()
+        # One failed attempt only: the new story is staged, not sent in the same run.
+        self.assertEqual(len(self.telegram_calls), 1)
+        self.assertEqual(self.stored[0]["telegram"]["status"], "pending")
+        self.assertEqual(self.stored[-1]["telegram"]["status"], "failed")
+
+    def test_publication_failure_does_not_mask_process_error(self):
+        self.telegram_response = response(500, {"ok": False, "description": "Rejected"})
+        self.fail_public = True
+        self.stored = [{"id": 1, "titulo": "old"}]
+        with self.assertRaisesRegex(RuntimeError, "Entrega failed"):
+            run_job.job()
 
     def test_malformed_success_is_uncertain(self):
         self.telegram_response = response(200, {"ok": True, "result": {}})
@@ -291,24 +321,49 @@ class DeliveryTests(unittest.TestCase):
         run_job.publish_news(items)
         self.assertEqual(self.public, [{"id": 1}, {"id": 2}])
 
+    def test_public_snapshot_drops_dedup_alias_and_state_is_compact(self):
+        run_job.publish_news([{"id": 1, "dedup_alias": ["https://old"]}])
+        self.assertEqual(self.public, [{"id": 1}])
+        run_job.commit_noticias([{"id": 1}], self.sha)
+        self.assertEqual(self.checkpoints[-1], ("bot-state", [{"id": 1}]))
+
+    def test_known_cve_is_skipped_before_ai_and_mitre_only_for_security(self):
+        self.stored = [{"id": 1, "titulo": "Fallo en OpenSSH", "resumen": "CVE-2024-6387 explotada",
+                        "enlace_original": "https://other.test/1"}]
+        self.item.update(title="CVE-2024-6387 exploited in the wild", link="https://new.test/2")
+        with patch.object(run_job, "summarize_news") as summarize:
+            run_job.job()
+        summarize.assert_not_called()
+        self.item.update(title="Samsung invests in AI chips", link="https://new.test/3")
+        with patch.object(run_job, "summarize_news", return_value=("Samsung invierte en chips de IA",
+                                                                   "Nuevos modelos de lenguaje.")), \
+             patch.object(run_job, "tag_ttps", return_value=[]) as tagger:
+            run_job.job()
+        tagger.assert_not_called()
+        self.assertEqual(self.stored[0]["categoria"], "IA")
+
     def test_later_uncertain_delivery_does_not_hide_confirmed_news(self):
         self.stored = [{"id": i, "titulo": f"Story {i}", "telegram": {
             "status": "pending", "text": f"Story {i}", "attempts": 0,
         }} for i in (2, 1)]
         outcomes = iter([response(200, {"ok": True, "result": {"message_id": 42}}),
-                         requests.ReadTimeout("simulated")])
+                         requests.ReadTimeout("simulated"),
+                         response(200, {"ok": True, "result": {"message_id": 43}})])
 
         def send(url, **kwargs):
             self.telegram_response = next(outcomes)
             return self.post(url, **kwargs)
 
         with patch.object(run_job.requests, "post", side_effect=send):
-            for _ in range(2):
-                with self.assertRaises(RuntimeError):
-                    run_job.job()
-        self.assertEqual(len(self.telegram_calls), 2)
-        self.assertEqual(self.public, [{"id": 1, "titulo": "Story 1"}])
-        self.assertEqual(self.public_commits, 1)
+            with self.assertRaises(RuntimeError):
+                run_job.job()
+            self.assertEqual([n["id"] for n in self.public], [1])
+            with self.assertRaisesRegex(RuntimeError, "incierta"):
+                run_job.job()
+        # Story 2 stays uncertain (never resent); the queued new story still goes out.
+        self.assertEqual(len(self.telegram_calls), 3)
+        self.assertEqual([n["id"] for n in self.public], [3, 1])
+        self.assertEqual(self.public_commits, 2)
 
     def test_uncommitted_ack_never_reaches_public_snapshot(self):
         self.fail_ack = True

@@ -55,7 +55,17 @@ def _nvd_get(params, headers):
     return None
 
 
-def _nvd_item(vuln, min_cvss):
+def _nvd_published(cve):
+    """UTC publication date; NVD sends naive ISO timestamps. None if invalid."""
+    try:
+        published = datetime.fromisoformat(cve["published"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return (published.replace(tzinfo=timezone.utc) if published.tzinfo is None
+            else published.astimezone(timezone.utc))
+
+
+def _nvd_item(vuln, min_cvss, min_published=None):
     """Parse one record; prefer valid primary v4, then v3.1, then v3.0."""
     cve = vuln["cve"]
     cve_id = cve["id"]
@@ -63,6 +73,11 @@ def _nvd_item(vuln, min_cvss):
         raise ValueError("invalid CVE ID")
     if cve.get("vulnStatus") == "Rejected":
         return None
+    # The query filters by lastModified: an old CVE re-analyzed today is not news.
+    if min_published is not None:
+        published = _nvd_published(cve)
+        if published is None or published < min_published:
+            return None
     descriptions = {d["lang"]: d["value"] for d in cve.get("descriptions", [])
                     if isinstance(d, dict) and isinstance(d.get("value"), str) and isinstance(d.get("lang"), str)}
     description = descriptions.get("es") or descriptions.get("en", "")
@@ -117,8 +132,12 @@ def _nvd_item(vuln, min_cvss):
     }
 
 
-def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10, *, now=None):
-    """Return top scores across fetched pages; log errors/truncation, keep partial results."""
+def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10, *, now=None, max_published_days=7):
+    """Return top scores across fetched pages; log errors/truncation, keep partial results.
+
+    The lastModified window catches CVEs scored after publication; the
+    `max_published_days` bound drops old CVEs that were merely re-modified.
+    """
     items = {}
     try:
         min_cvss = normalize_cvss_score(min_cvss)
@@ -129,6 +148,7 @@ def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10, *, now=None):
         now = now or datetime.now(timezone.utc)
         now = now.replace(tzinfo=timezone.utc) if now.tzinfo is None else now.astimezone(timezone.utc)
         start = now - timedelta(hours=hours_back)
+        min_published = now - timedelta(days=max_published_days)
         params = {
             "lastModStartDate": start.isoformat(timespec="milliseconds"),
             "lastModEndDate": now.isoformat(timespec="milliseconds"),
@@ -166,7 +186,7 @@ def scrape_nvd_cves(hours_back=48, min_cvss=7.0, limit=10, *, now=None):
             logger.info("NVD: %s records at startIndex=%s (total=%s)", len(records), index, total)
             for record in records:
                 try:
-                    item = _nvd_item(record, min_cvss)
+                    item = _nvd_item(record, min_cvss, min_published)
                     if item and (item["cve_id"] not in items or item["cvss_score"] > items[item["cve_id"]]["cvss_score"]):
                         items[item["cve_id"]] = item
                 except (KeyError, TypeError, ValueError, AttributeError, OverflowError):

@@ -91,6 +91,51 @@ class TestRunJob(unittest.TestCase):
         act_hist, _ = run_job.reclasificar_noticias(noticias_hist)
         self.assertEqual(act_hist[0]["titulo"], "CEO de Crypto acusa a Corea del Norte de robar $387 M en Bitget y activa fondo de protección")
 
+    def test_clean_title_conserva_sustantivos_finales_validos(self):
+        for title in ("Microsoft alerta sobre nuevos ataques", "Google publica su código",
+                      "Rusia es la amenaza principal", "Nuevas herramientas"):
+            with self.subTest(title=title):
+                self.assertEqual(run_job.clean_title(title), title)
+        # Si el título venía cortado ('...'), sí se quitan los fragmentos colgantes.
+        self.assertEqual(run_job.clean_title("Convierte el asistente en puerta...", truncado=True),
+                         "Convierte el asistente")
+
+    def test_parse_news_response_con_negritas_markdown(self):
+        response = "**TÍTULO:** Fallo en Foo permite RCE\n**RESUMEN:** Bar baz.\n**SECTOR:** Todos"
+        self.assertEqual(run_job.parse_news_response(response), ("Fallo en Foo permite RCE", "Bar baz."))
+        response = "### Título: Fallo en Foo\n- Resumen: Bar baz."
+        self.assertEqual(run_job.parse_news_response(response), ("Fallo en Foo", "Bar baz."))
+
+    def test_unicode_de_no_separacion_se_normaliza(self):
+        titulo, resumen = run_job.parse_news_response(
+            "TÍTULO: Kiteworks pide cierre de 6 horas ante zero‑day\nRESUMEN: Pago de 100 €.")
+        self.assertEqual(titulo, "Kiteworks pide cierre de 6 horas ante zero-day")
+        self.assertEqual(resumen, "Pago de 100 €.")
+        noticias, cambios = run_job.reclasificar_noticias([{"id": 1, "titulo": "Fallo zero‑day",
+                                                             "severidad": "high", "fuente": "X"}])
+        self.assertEqual(noticias[0]["titulo"], "Fallo zero-day")
+
+    def test_cve_con_guion_unicode_aplica_veto(self):
+        existentes = [{"titulo": "CVE‑2022‑26490: Desbordamiento de búfer en driver NFC",
+                       "resumen": "Desbordamiento de búfer permite escalada de privilegios local."}]
+        es_sim, _ = run_job.es_noticia_similar(
+            "CVE‑2022‑27666: Desbordamiento de búfer en IPsec ESP",
+            "Desbordamiento de búfer permite escalada de privilegios local.", existentes)
+        self.assertFalse(es_sim)
+
+    def test_palabras_comunes_no_hacen_similares_avisos_distintos(self):
+        # Caso real: el chequeo 3 fusionaba avisos por "aplicar/logs/recomienda/tres".
+        existentes = [{"titulo": "CISA advierte explotación activa de tres vulnerabilidades en Cisco IOS",
+                       "resumen": "Las agencias federales deben aplicar parches antes del viernes; se "
+                                  "recomienda revisar logs de los routers expuestos y segmentar redes internas."}]
+        titulo = "Tres vulnerabilidades XSS afectan al TPVEnlanube (CVE-2026-7170)"
+        resumen = ("El fabricante recomienda aplicar la actualización 3.2 y revisar logs del servidor web; "
+                   "los fallos permiten robar sesiones de clientes del comercio electrónico.")
+        texto_existente = f"{existentes[0]['titulo']} {existentes[0]['resumen']}"
+        self.assertGreaterEqual(run_job.calcular_similitud(f"{titulo} {resumen}", texto_existente), 0.25)
+        es_sim, _ = run_job.es_noticia_similar(titulo, resumen, existentes)
+        self.assertFalse(es_sim)
+
     def test_is_offtopic_candidate(self):
         self.assertTrue(run_job.is_offtopic_candidate("Friday Squid Blogging: October"))
         self.assertTrue(run_job.is_offtopic_candidate("ISC Stormcast For Monday", "podcast https://isc.sans.edu/podcastdetail/10112"))
@@ -221,7 +266,9 @@ class TestClasificacion(unittest.TestCase):
         noticias, cambios = run_job.reclasificar_noticias(noticias)
         self.assertEqual([n["categoria"] for n in noticias],
                          ["Ciberseguridad", "Ciberseguridad", "IA"])
-        self.assertEqual([c[0] for c in cambios], [3, 2])  # la 1 no cambia
+        self.assertEqual([c[0] for c in cambios if c[3] != "severidad"], [3, 2])  # la 1 no cambia
+        # La severidad que faltaba también se registra para que se persista.
+        self.assertEqual(sorted({c[0] for c in cambios if c[3] == "severidad"}), [1, 2, 3])
         # Idempotente: una segunda pasada no reporta cambios.
         _, cambios2 = run_job.reclasificar_noticias(noticias)
         self.assertEqual(cambios2, [])
@@ -452,6 +499,26 @@ class TestDedupRetroactivo(unittest.TestCase):
         self.assertIn(3, ids_limpia)      # se conserva la más reciente
         self.assertNotIn(1, ids_limpia)   # se elimina la más antigua
         self.assertEqual([n["id"] for n in elim], [1])
+
+    def test_deduplicar_hereda_url_y_clave_del_eliminado(self):
+        nueva = dict(self._n(3, "Campaña Malware SmartLoader"), enlace_original="https://a/3")
+        vieja = dict(self._n(1, "Malware SmartLoader"), enlace_original="https://b/1",
+                     dedup_key="txt:malware smartloader")
+        limpia, _ = run_job.deduplicar_noticias([nueva, vieja])
+        self.assertEqual(limpia[0]["dedup_alias"], ["https://b/1", "txt:malware smartloader"])
+        # Idempotente: una segunda pasada no duplica alias ni elimina nada.
+        limpia2, elim2 = run_job.deduplicar_noticias(limpia)
+        self.assertEqual(elim2, [])
+        self.assertEqual(limpia2[0]["dedup_alias"], ["https://b/1", "txt:malware smartloader"])
+
+    def test_deduplicar_2000_noticias_es_rapido(self):
+        import time as _time
+        noticias = [self._n(i, f"Noticia {i} sobre Producto{i} y Vendor{i % 50}",
+                            f"Resumen {i} con Actor{i % 300} y CVE-2026-{10000 + i}")
+                    for i in range(2000, 0, -1)]
+        inicio = _time.monotonic()
+        run_job.deduplicar_noticias(noticias)
+        self.assertLess(_time.monotonic() - inicio, 60)
 
 
 class TestDedupNombresPropios(unittest.TestCase):

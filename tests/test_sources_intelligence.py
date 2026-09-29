@@ -95,7 +95,7 @@ TELEGRAM_FIXTURE = b'''<!doctype html><html><body><section class="tgme_channel_h
 NVD_RECORD = {
     "cve": {
         "id": "CVE-2024-6387", "sourceIdentifier": "secalert@redhat.com",
-        "published": "2024-07-01T12:15:02.507", "lastModified": "2026-09-05T10:00:00.000",
+        "published": "2026-09-04T12:15:02.507", "lastModified": "2026-09-05T10:00:00.000",
         "vulnStatus": "Analyzed",
         "descriptions": [{"lang": "en", "value": "A signal handler race condition was found in OpenSSH's server."}],
         "metrics": {"cvssMetricV31": [{"source": "nvd@nist.gov", "type": "Primary", "cvssData": {
@@ -176,6 +176,12 @@ class FeedTests(OfflineTest):
             with self.subTest(value=value):
                 self.assertEqual(rss.is_recent(value, now=NOW), expected)
         self.assertEqual(rss.parse_date("2026-09-05T14:00:00+02:00"), NOW)
+
+    def test_rss_html_description_becomes_plain_text(self):
+        with patch.object(rss.scraper, "get", return_value=response(content=RSS_FIXTURE)):
+            items = rss.scrape_rss_feed("https://news.example.org/rss", "RSS", limit=2, now=NOW)
+        self.assertEqual(items[0]["content"], "CVE-2024-6387 patch available")
+        self.assertEqual(rss.html_a_texto('<p>Hi <img src="https://t.example/x.png"> there</p>'), "Hi there")
 
     def test_rss_bytes_invalid_entries_do_not_consume_limit(self):
         with patch.object(rss.scraper, "get", return_value=response(content=RSS_FIXTURE)):
@@ -263,6 +269,16 @@ class TelegramTests(OfflineTest):
 
 
 class NvdTests(OfflineTest):
+    def test_old_cve_remodified_recently_is_not_news(self):
+        old = nvd_record("CVE-2018-0001", 9.8)
+        old["cve"]["published"] = "2018-01-10T12:00:00.000"
+        missing = nvd_record("CVE-2026-0002", 9.0)
+        del missing["cve"]["published"]
+        fresh = nvd_record("CVE-2026-0003", 8.1)
+        with patch.object(nvd.requests, "get", return_value=nvd_page([old, missing, fresh])):
+            items = nvd.scrape_nvd_cves(now=NOW)
+        self.assertEqual([item["cve_id"] for item in items], ["CVE-2026-0003"])
+
     def test_paginate_before_top_score_includes_critical_98(self):
         pages = [nvd_page([nvd_record("CVE-2024-6387", 8.1)], total=2),
                  nvd_page([nvd_record("CVE-2024-3400", 9.8)], index=1, total=2)]

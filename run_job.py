@@ -1,7 +1,7 @@
 # run_job.py — Entry point para GitHub Actions
 # Orquestador principal: recolecta → analiza → enriquece → distribuye
 
-import os, re, time, logging, json, base64, requests
+import os, re, time, logging, json, base64, random, requests
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 from dotenv import load_dotenv
@@ -61,8 +61,13 @@ from intelligence.severity_classifier import (
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+# Espacios y guiones "de no separación" que emiten los LLM (p.ej. "zero‑day" con
+# U+2011, "6 horas" con U+202F): rompen búsquedas y la tokenización del dedup.
+_UNICODE_RARO = str.maketrans({"‑": "-", " ": " ", " ": " ", " ": " ", "​": ""})
+
+
 def clean_markdown(text):
-    return re.sub(r'\*+', '', text).strip()
+    return re.sub(r'\*+', '', text.translate(_UNICODE_RARO)).strip()
 
 
 _COMPOUND_PREFIXES = {
@@ -81,15 +86,20 @@ _TRAILING_STOP = {
     # Conjunciones y relativos
     "que", "pero", "sino", "como", "cuando", "donde", "cual", "cuales", "cuyo", "cuya", "cuyos", "cuyas", "ni",
     # Verbos auxiliares o conectores que dejan la idea inconclusa
-    "permite", "permiten", "permite a", "usando", "logra", "logran", "afecta", "afectan", "deja", "dejan",
+    "permite", "permiten", "usando", "logra", "logran", "afecta", "afectan", "deja", "dejan",
     # Inglés
     "the", "in", "on", "at", "to", "for", "with", "by", "of", "and", "or", "a", "an", "is", "are",
     "from", "into", "as", "that", "which", "who", "using", "allows", "allowing"
 }
 
+# Verbos/conectores que nunca cierran un titular: se quitan siempre.
 _EXTRA_DANGLING = {
-    "robar", "generan", "desplegar", "ampliacion", "ampliación", "ataques", "herramientas",
-    "roban", "afectan", "permiten", "mediante", "traves", "través", "robo", "principal"
+    "robar", "generan", "desplegar", "roban", "afectan", "permiten", "mediante", "traves", "través",
+}
+# Sustantivos que SÍ pueden cerrar un titular válido ("...nuevos ataques", "...su código")
+# y solo delatan un corte cuando el texto fue truncado de verdad.
+_DANGLING_SI_TRUNCADO = _COMPOUND_PREFIXES | {
+    "ampliacion", "ampliación", "ataques", "herramientas", "robo", "principal",
 }
 
 # Títulos históricos que habían quedado amputados y se restauran con su redacción completa
@@ -104,8 +114,18 @@ _REFINED_HISTORICAL_TITLES = {
 }
 
 
-def clean_title(text):
-    """Limpia un título eliminando comillas exteriores, puntos suspensivos (...) y colas cortadas."""
+def _palabra_colgante(word, truncado):
+    w = word.lower()
+    return (w in _TRAILING_STOP or w in _EXTRA_DANGLING
+            or (truncado and w in _DANGLING_SI_TRUNCADO))
+
+
+def clean_title(text, truncado=False):
+    """Limpia un título eliminando comillas exteriores, puntos suspensivos (...) y colas cortadas.
+
+    Con `truncado=True` (el texto venía cortado, p.ej. terminaba en '...') también
+    quita sustantivos que suelen quedar a medias ("puerta", "código", "ataques").
+    """
     if not text:
         return ""
     text = clean_markdown(text).strip()
@@ -115,11 +135,7 @@ def clean_title(text):
     text = re.sub(r'[\s.…:;,-]+$', '', text).strip()
 
     words = text.split()
-    while words and (
-        words[-1].lower() in _TRAILING_STOP
-        or words[-1].lower() in _COMPOUND_PREFIXES
-        or words[-1].lower() in _EXTRA_DANGLING
-    ):
+    while words and _palabra_colgante(words[-1], truncado):
         words.pop()
 
     if words:
@@ -155,11 +171,7 @@ def smart_truncate_title(text, max_len=115, add_ellipsis=False):
         words = candidate.split()
 
         # Limpiar palabras finales que sean conectores, prefijos compuestos o términos incompletos
-        while words and (
-            words[-1].lower() in _TRAILING_STOP
-            or words[-1].lower() in _COMPOUND_PREFIXES
-            or words[-1].lower() in _EXTRA_DANGLING
-        ):
+        while words and _palabra_colgante(words[-1], truncado=True):
             words.pop()
 
         if words:
@@ -200,26 +212,28 @@ def parse_news_response(response):
     in_resumen = False
 
     for raw_line in response.splitlines():
-        line = raw_line.strip()
+        # Quitar markdown ANTES de buscar la etiqueta: "**TÍTULO:** X" (típico del
+        # fallback Llama) no se detectaba y se publicaba "TÍTULO: X" como titular.
+        line = re.sub(r'^[#>\-\s]+', '', clean_markdown(raw_line)).strip()
         if not line:
             continue
         upper = line.upper()
         if upper.startswith("TÍTULO:") or upper.startswith("TITULO:"):
             saw_label = True
-            raw_title = clean_markdown(line.split(":", 1)[1].strip())
+            raw_title = line.split(":", 1)[1].strip()
             titulo_ai = smart_truncate_title(raw_title, max_len=115, add_ellipsis=False)
             in_resumen = False
         elif upper.startswith("RESUMEN:"):
             saw_label = True
             in_resumen = True
-            value = clean_markdown(line.split(":", 1)[1].strip())
+            value = line.split(":", 1)[1].strip()
             if value:
                 resumen_parts.append(value)
         elif upper.startswith("SECTOR:"):
             saw_label = True
             in_resumen = False
         elif in_resumen:
-            resumen_parts.append(clean_markdown(line))
+            resumen_parts.append(line)
 
     resumen_ai = " ".join(resumen_parts).strip()
     if titulo_ai and resumen_ai and titulo_ai.casefold() != resumen_ai.casefold():
@@ -399,12 +413,12 @@ def calcular_similitud(texto1, texto2):
     if not texto1 or not texto2:
         return 0.0
 
-    palabras1 = set(re.findall(r'\b\w+\b', texto1.lower()))
-    palabras2 = set(re.findall(r'\b\w+\b', texto2.lower()))
-
-    stopwords = {"el", "la", "los", "las", "un", "una", "unos", "unas", "y", "o", "de", "en", "a", "que", "por", "para", "con", "del", "al", "se", "es", "su", "como", "sobre"}
-    palabras1 -= stopwords
-    palabras2 -= stopwords
+    # Sin acentos y sin jerga genérica de seguridad ("vulnerabilidad", "permite",
+    # "remota"...): con el coeficiente de solape, esas palabras bastaban para que
+    # dos noticias distintas superaran el umbral.
+    ignorar = _PALABRAS_GENERICAS | _JERGA_VULN
+    palabras1 = set(re.findall(r'\b\w+\b', _norm_dedup(texto1))) - ignorar
+    palabras2 = set(re.findall(r'\b\w+\b', _norm_dedup(texto2))) - ignorar
 
     if not palabras1 or not palabras2:
         return 0.0
@@ -414,21 +428,6 @@ def calcular_similitud(texto1, texto2):
     overlap = len(interseccion) / min(len(palabras1), len(palabras2))
 
     return max(jaccard, overlap)
-
-def _extraer_entidades_tecnicas(texto):
-    """Extrae CVE IDs y nombres de producto/tecnología relevantes para comparación exacta."""
-    texto = texto.lower()
-    cves = set(re.findall(r'cve-\d{4}-\d+', texto))
-    # Palabras técnicas significativas de 4+ letras que no son stopwords
-    stopwords_extra = {
-        "para", "como", "este", "esta", "con", "por", "que", "los", "las",
-        "una", "unos", "unas", "del", "desde", "hasta", "sobre", "entre",
-        "vulnerabilidad", "critica", "critico", "ataque", "exploit", "sistema",
-        "through", "allows", "remote", "local", "code", "execution", "arbitrary"
-    }
-    palabras = set(re.findall(r'\b[a-z][a-z0-9_\-]{3,}\b', texto))
-    palabras -= stopwords_extra
-    return cves, palabras
 
 def clave_contenido(titulo_original, contenido=""):
     """Genera una clave de deduplicación estable a partir del contenido ORIGINAL
@@ -441,7 +440,7 @@ def clave_contenido(titulo_original, contenido=""):
     Así, la misma historia desde fuentes/URLs distintas colapsa a la misma clave.
     """
     texto = f"{titulo_original} {contenido}".lower()
-    cves = sorted(set(re.findall(r'cve-\d{4}-\d+', texto)))
+    cves = sorted(_cves_de(texto))
     if cves:
         return "cve:" + ",".join(cves)
 
@@ -517,17 +516,25 @@ def pasa_diversidad(medio, medio_counts, count, ultimo_medio="", otros_medios_di
             return False, f"cuota underground (<= {int(UNDERGROUND_MAX_SHARE*100)}% del run)"
     return True, ""
 
+VENTANA_SIMILITUD = 100
+
+def _cves_recientes(noticias):
+    """CVEs mencionados en la ventana que revisa es_noticia_similar."""
+    return set().union(*(_cves_de(f"{n.get('titulo', '')} {n.get('resumen', '')}")
+                         for n in noticias[:VENTANA_SIMILITUD]))
+
 def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=0.35, source_nuevo=""):
 
     texto_nuevo = f"{titulo_nuevo} {resumen_nuevo}"
-    cves_nuevo, entidades_nuevo = _extraer_entidades_tecnicas(texto_nuevo)
+    cves_nuevo = _cves_de(texto_nuevo)
+    propios_nuevo = _nombres_propios(texto_nuevo)
     candidata = {"titulo": titulo_nuevo, "resumen": resumen_nuevo, "fuente": source_nuevo}
-    ventana = noticias_existentes[:100]
+    ventana = noticias_existentes[:VENTANA_SIMILITUD]
     # Frecuencia documental de nombres propios sobre la ventana (para medir rareza).
     df_propios = _df_nombres_propios(ventana)
     for noticia in ventana:
         texto_existente = f"{noticia.get('titulo', '')} {noticia.get('resumen', '')}"
-        cves_existente = set(re.findall(r'cve-\d{4}-\d+', texto_existente.lower()))
+        cves_existente = _cves_de(texto_existente)
         # VETO de CVE: si ambas tienen CVE(s) y son DISJUNTOS, son vulnerabilidades
         # DISTINTAS → nunca es la misma noticia (aunque el resumen IA sea calcado,
         # p.ej. "Vulnerabilidad SQL en X permite..."). Evita matar CVEs nuevos.
@@ -539,12 +546,13 @@ def es_noticia_similar(titulo_nuevo, resumen_nuevo, noticias_existentes, umbral=
             return True, noticia.get('titulo', '')
         # Chequeo 2: mismo CVE = siempre duplicado
         if cves_nuevo:
-            _, entidades_existente = _extraer_entidades_tecnicas(texto_existente)
             if cves_nuevo & cves_existente:
                 return True, noticia.get('titulo', '')
-            # Chequeo 3: misma entidad técnica + alta superposición de contexto
-            entidades_comunes = entidades_nuevo & entidades_existente
-            if len(entidades_comunes) >= 3 and similitud >= 0.25:
+            # Chequeo 3: mismos productos/vendors (nombres propios) + solape de contexto.
+            # Antes contaba cualquier palabra de 4+ letras ("logs", "recomienda",
+            # "vector") y marcaba como iguales avisos de CVE sin relación.
+            propios_comunes = propios_nuevo & _nombres_propios(texto_existente)
+            if len(propios_comunes) >= 2 and similitud >= 0.25:
                 return True, noticia.get('titulo', '')
         # Chequeo 4: misma historia desde otro medio (nombre propio raro compartido).
         if _misma_historia_propios(candidata, noticia, df_propios):
@@ -578,11 +586,22 @@ _PALABRAS_GENERICAS = _STOPWORDS_DEDUP | {
     "aplicacion", "app", "apps", "millones", "miles", "pese", "contra", "mediante",
     "traves", "cadena", "suministro", "operacion",
 }
+# Jerga de boletines de vulnerabilidades: aparece en casi todo aviso de CVE. Solo
+# para la similitud por palabras (es_noticia_similar); fuera de _PALABRAS_GENERICAS
+# para no alterar las entidades del dedup retroactivo ("MacOS" vs "macOS explotada").
+_JERGA_VULN = {
+    "vulnerabilidades", "criticas", "criticos", "permite", "permiten", "remota", "remoto",
+    "ejecucion", "ejecutar", "atacante", "atacantes", "explota", "explotan", "explotada",
+    "explotadas", "explotado", "explotados", "activa", "activamente", "afecta", "afectan",
+    "privilegios", "escalada", "autenticacion", "acceso", "control", "total", "version",
+    "versiones", "usuarios", "corrige", "corrigen", "advierte", "plugin", "inyeccion",
+    "arbitrario", "arbitraria", "autenticado", "fallas", "zero-day",
+}
 
 def _norm_dedup(texto):
     """minúsculas + sin acentos (para comparar entidades de forma estable)."""
     mapa = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u", "ñ": "n"}
-    return re.sub(r"[áéíóúñ]", lambda m: mapa[m.group()], texto.lower())
+    return re.sub(r"[áéíóúñ]", lambda m: mapa[m.group()], texto.translate(_UNICODE_RARO).lower())
 
 def _tokens_dedup(texto):
     return set(re.findall(r'\b\w+\b', _norm_dedup(texto))) - _STOPWORDS_DEDUP
@@ -591,12 +610,9 @@ def _entidades_distintivas(titulo):
     """Tokens de 4+ letras que NO son palabras genéricas (nombres propios/productos)."""
     return {w for w in _tokens_dedup(titulo) if len(w) >= 4 and w not in _PALABRAS_GENERICAS}
 
-def _jaccard_titulos(t1, t2):
-    a, b = _tokens_dedup(t1), _tokens_dedup(t2)
-    return len(a & b) / len(a | b) if a and b else 0.0
-
 def _cves_de(texto):
-    return set(re.findall(r'cve-\d{4}-\d+', texto.lower()))
+    # translate: "CVE‑2022‑27666" con U+2011 no casaba y el veto de CVE fallaba.
+    return set(re.findall(r'cve-\d{4}-\d+', texto.translate(_UNICODE_RARO).lower()))
 
 # ── Dedup por NOMBRES PROPIOS raros (misma historia desde medios distintos) ─────
 # El caso que ni la clave de contenido (títulos distintos), ni el CVE (campañas
@@ -639,10 +655,35 @@ def _df_nombres_propios(noticias):
             df[w] = df.get(w, 0) + 1
     return df
 
-def _jaccard_contenido(n1, n2):
-    a = _tokens_dedup(f"{n1.get('titulo','')} {n1.get('resumen','')}")
-    b = _tokens_dedup(f"{n2.get('titulo','')} {n2.get('resumen','')}")
+def _rasgos_dedup(n):
+    """Rasgos de una noticia para el dedup, calculados UNA vez por noticia.
+
+    Antes cada comparación de pares re-tokenizaba ambos textos con regex: sobre
+    2000 noticias (~2M pares) el dedup retroactivo tardaba ~6 minutos por run.
+    """
+    titulo, resumen = n.get("titulo", ""), n.get("resumen", "")
+    return {
+        "cves": _cves_de(f"{titulo} {resumen}"),
+        "tok_titulo": _tokens_dedup(titulo),
+        "entidades": _entidades_distintivas(titulo),
+        "propios": _nombres_propios(f"{titulo}. {resumen}"),
+        "tok_contenido": _tokens_dedup(f"{titulo} {resumen}"),
+        "medio": medio_de_fuente(n["fuente"]) if n.get("fuente") else None,
+    }
+
+def _jaccard(a, b):
     return len(a & b) / len(a | b) if a and b else 0.0
+
+def _misma_historia_rasgos(r1, r2, df):
+    if r1["medio"] and r2["medio"] and r1["medio"] == r2["medio"]:
+        return False
+    comunes = {w for w in (r1["propios"] & r2["propios"]) if df.get(w, 0) <= DF_PROPIO_RARO}
+    if not comunes:
+        return False
+    ultra = any(df.get(w, 0) <= DF_PROPIO_ULTRARARO for w in comunes)
+    jc = _jaccard(r1["tok_contenido"], r2["tok_contenido"])
+    # Nombre casi único compartido + algo de solape; o varios raros; o uno + solape alto.
+    return (ultra and jc >= 0.15) or (len(comunes) >= 2 and jc >= 0.18) or jc >= 0.30
 
 def _misma_historia_propios(n1, n2, df):
     """True si comparten nombre(s) propio(s) raro(s) + solape de contenido.
@@ -652,19 +693,18 @@ def _misma_historia_propios(n1, n2, df):
     mismo medio (p.ej. digests diarios "Stormcast", o familias de CVEs de un mismo
     producto) la cubren otras capas, y aquí daría falsos positivos.
     """
-    m1 = medio_de_fuente(n1["fuente"]) if n1.get("fuente") else None
-    m2 = medio_de_fuente(n2["fuente"]) if n2.get("fuente") else None
-    if m1 and m2 and m1 == m2:
-        return False
-    p1 = _nombres_propios(f"{n1.get('titulo','')}. {n1.get('resumen','')}")
-    p2 = _nombres_propios(f"{n2.get('titulo','')}. {n2.get('resumen','')}")
-    comunes = {w for w in (p1 & p2) if df.get(w, 0) <= DF_PROPIO_RARO}
-    if not comunes:
-        return False
-    ultra = any(df.get(w, 0) <= DF_PROPIO_ULTRARARO for w in comunes)
-    jc = _jaccard_contenido(n1, n2)
-    # Nombre casi único compartido + algo de solape; o varios raros; o uno + solape alto.
-    return (ultra and jc >= 0.15) or (len(comunes) >= 2 and jc >= 0.18) or jc >= 0.30
+    return _misma_historia_rasgos(_rasgos_dedup(n1), _rasgos_dedup(n2), df)
+
+def _son_duplicadas_rasgos(r1, r2, df=None):
+    if r1["cves"] and r2["cves"]:
+        return bool(r1["cves"] & r2["cves"])  # mismo CVE = sí; CVEs distintos = no (veto)
+    j = _jaccard(r1["tok_titulo"], r2["tok_titulo"])
+    if j >= 0.85:
+        return True
+    if j >= 0.6 and r1["entidades"] and r1["entidades"] == r2["entidades"]:
+        return True
+    # Capa de nombres propios raros (solo con contexto de corpus para medir rareza).
+    return df is not None and _misma_historia_rasgos(r1, r2, df)
 
 def son_duplicadas(n1, n2, df=None):
     """True si dos noticias son la MISMA historia (alta confianza, pocos falsos +).
@@ -676,40 +716,46 @@ def son_duplicadas(n1, n2, df=None):
       - Jaccard ≥ 0.6 Y mismas entidades distintivas → duplicado.
       - (si se pasa `df`) comparten un nombre propio raro + solape de contenido.
     """
-    t1, t2 = n1.get("titulo", ""), n2.get("titulo", "")
-    c1 = _cves_de(f"{t1} {n1.get('resumen','')}")
-    c2 = _cves_de(f"{t2} {n2.get('resumen','')}")
-    if c1 and c2:
-        return bool(c1 & c2)  # mismo CVE = sí; CVEs distintos = no (veto)
-    j = _jaccard_titulos(t1, t2)
-    if j >= 0.85:
-        return True
-    e1, e2 = _entidades_distintivas(t1), _entidades_distintivas(t2)
-    if j >= 0.6 and e1 and e1 == e2:
-        return True
-    # Capa de nombres propios raros (solo con contexto de corpus para medir rareza).
-    if df is not None and _misma_historia_propios(n1, n2, df):
-        return True
-    return False
+    return _son_duplicadas_rasgos(_rasgos_dedup(n1), _rasgos_dedup(n2), df)
+
+MAX_ALIAS_DEDUP = 20
+
+def _claves_dedup(n):
+    """URLs y claves de contenido que representan a una noticia (incluye las
+    heredadas de duplicados eliminados, para no volver a publicarlas)."""
+    claves = {n.get("enlace_original", ""), n.get("dedup_key", "")}
+    claves.update(n.get("dedup_alias", []))
+    return {c for c in claves if c}
 
 def deduplicar_noticias(noticias):
     """Recorre la lista (orden newest-first) y elimina las noticias MÁS ANTIGUAS
     que sean duplicado de una más reciente ya conservada.
 
+    La noticia conservada hereda en `dedup_alias` la URL y la clave de la
+    eliminada: sin eso, la URL borrada podía volver a entrar desde su feed.
+
     Devuelve (lista_limpia, eliminadas).
     """
     df = _df_nombres_propios(noticias)
-    kept, eliminadas = [], []
+    kept, kept_sent, eliminadas = [], [], []
     for n in noticias:
+        rasgos = _rasgos_dedup(n)
         # Never discard a queued or unresolved delivery during history cleanup.
-        unresolved = n.get("telegram", {}).get("status", "sent") != "sent"
-        if not unresolved and any(
-            k.get("telegram", {}).get("status", "sent") == "sent"
-            and son_duplicadas(n, k, df=df) for k in kept
-        ):
+        sent = n.get("telegram", {}).get("status", "sent") == "sent"
+        original = None
+        if sent:
+            original = next((k for k, rk in kept_sent
+                             if _son_duplicadas_rasgos(rasgos, rk, df=df)), None)
+        if original is not None:
+            alias = list(original.get("dedup_alias", []))
+            alias.extend(sorted(_claves_dedup(n) - _claves_dedup(original)))
+            if alias:
+                original["dedup_alias"] = alias[-MAX_ALIAS_DEDUP:]
             eliminadas.append(n)
         else:
             kept.append(n)
+            if sent:
+                kept_sent.append((n, rasgos))
     return kept, eliminadas
 
 def build_noticia(item, titulo, resumen, categoria, noticias_actuales,
@@ -745,13 +791,16 @@ def commit_noticias(noticias, sha, nuevas=0, *, branch=GITHUB_STATE_BRANCH):
         raise RuntimeError("GIT_TOKEN no configurado")
 
     url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{GITHUB_FILE}"
+    public = branch == GITHUB_PUBLIC_BRANCH
+    # bot-state recibe ~2 commits por entrega: JSON compacto para que la rama no
+    # crezca con ~3 MB por checkpoint. El sitio público conserva el formato legible.
+    content = (json.dumps(noticias, ensure_ascii=False, indent=2) if public
+               else json.dumps(noticias, ensure_ascii=False, separators=(",", ":")))
     payload = {
-        "message": ("feat: publish news snapshot" if branch == GITHUB_PUBLIC_BRANCH
+        "message": ("feat: publish news snapshot" if public
                     else "chore: checkpoint Telegram deliveries"),
         "branch": branch,
-        "content": base64.b64encode(
-            json.dumps(noticias, ensure_ascii=False, indent=2).encode()
-        ).decode(),
+        "content": base64.b64encode(content.encode()).decode(),
     }
     if sha:  # omitir sha solo si el archivo no existía (404)
         payload["sha"] = sha
@@ -783,7 +832,7 @@ def commit_noticias(noticias, sha, nuevas=0, *, branch=GITHUB_STATE_BRANCH):
 
 def publish_news(noticias, nuevas=0):
     """Write one public snapshot, never delivery checkpoints, to the site branch."""
-    public = [{key: value for key, value in n.items() if key != "telegram"}
+    public = [{key: value for key, value in n.items() if key not in ("telegram", "dedup_alias")}
               for n in noticias if n.get("telegram", {}).get("status", "sent") == "sent"][:2000]
     current, sha = get_github_file(GITHUB_PUBLIC_BRANCH)
     if current is None:
@@ -984,10 +1033,14 @@ def reclasificar_noticias(noticias):
                 cambios.append((nid, tit_orig, tit_refinado, "titulo_refinado"))
         elif tit_orig and ("..." in tit_orig or "…" in tit_orig or tit_orig.endswith(".")):
             # Saneamiento retroactivo de títulos con puntos suspensivos o cortados
-            tit_limpio = clean_title(tit_orig)
+            truncado = "..." in tit_orig or "…" in tit_orig
+            tit_limpio = clean_title(tit_orig, truncado=truncado)
             if tit_limpio and tit_limpio != tit_orig:
                 n["titulo"] = tit_limpio
                 cambios.append((nid, tit_orig, tit_limpio, "titulo"))
+        elif tit_orig and tit_orig.translate(_UNICODE_RARO) != tit_orig:
+            n["titulo"] = tit_orig.translate(_UNICODE_RARO)
+            cambios.append((nid, tit_orig, n["titulo"], "titulo_unicode"))
 
         antes = n.get("categoria", "")
         nueva = detectar_categoria(n.get("titulo", ""), n.get("fuente", ""), n.get("resumen", ""))
@@ -997,6 +1050,9 @@ def reclasificar_noticias(noticias):
         sev_antes = n.get("severidad", "")
         if not sev_antes or sev_antes not in SEVERITY_CONFIG:
             n["severidad"] = normalize_severity(sev_antes) if sev_antes else classify_severity(n.get("titulo", ""), n.get("resumen", ""))
+            # Registrar el cambio: si solo cambiaba la severidad no se persistía.
+            if n["severidad"] != sev_antes:
+                cambios.append((nid, sev_antes, n["severidad"], "severidad"))
     return noticias, cambios
 
 def get_image_url(categoria, used_images=None):
@@ -1023,17 +1079,17 @@ def get_image_url(categoria, used_images=None):
                 base_url = url.split("?")[0]
                 if not any(base_url in used_url for used_url in used_images):
                     return url
-        except:
+        except (requests.RequestException, ValueError, KeyError, TypeError):
             pass
 
-    import random
-    seeds = {
-        "Ciberseguridad": ["cybersec99", "cybersec100", "cybersec101", "cybersec102", "cybersec103"],
-        "IA": ["aitech77", "aitech78", "aitech79", "aitech80", "aitech81"],
-        "Tech": ["tech01", "tech02", "tech03", "tech04", "tech05"]
-    }
-    random_seed = random.choice(seeds.get(categoria, seeds["Tech"]))
-    return f"https://picsum.photos/seed/{random_seed}/800/450"
+    # Fallback: antes había 5 seeds por categoría y se repetían constantemente.
+    prefix = {"Ciberseguridad": "cybersec", "IA": "aitech"}.get(categoria, "tech")
+    url = ""
+    for _ in range(10):
+        url = f"https://picsum.photos/seed/{prefix}{random.randint(1, 1000)}/800/450"
+        if url not in used_images:
+            break
+    return url
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 # La rotación de keys vive en groq_rotation.py (compartida con mitre_tagger).
@@ -1142,12 +1198,18 @@ def send_to_telegram(message):
         return {"status": "uncertain", "error": "unconfirmed_transport"}
 
 
-def deliver_pending(noticias, sha):
+def _drain_outbox(noticias, sha):
     """Drain the durable outbox oldest-first. Legacy records are already sent.
+
+    Returns (sha, problems, telegram_down). A stuck record (uncertain or out of
+    attempts) is reported and SKIPPED, never resent, so one bad message no longer
+    blocks every later delivery. A failed send or a Telegram wait request stops
+    the drain for this run (`telegram_down`), leaving the rest pending.
 
     A crash after `sending` is persisted is ambiguous: manual reconciliation is
     required, since Telegram sendMessage has no idempotency key.
     """
+    problems = []
     for noticia in reversed(noticias):
         delivery = noticia.get("telegram")
         if delivery is None or delivery["status"] == "sent":
@@ -1157,12 +1219,15 @@ def deliver_pending(noticias, sha):
             sha = commit_noticias(noticias, sha)
         if delivery["status"] == "uncertain":
             logger.error("Entrega incierta id=%s; revisar Telegram e historial", noticia.get("id"))
-            raise RuntimeError(f"Entrega incierta de noticia {noticia.get('id')}; revisar Telegram antes de reintentar")
+            problems.append(f"Entrega incierta de noticia {noticia.get('id')}; revisar Telegram antes de reintentar")
+            continue
         if delivery.get("attempts", 0) >= 5:
             logger.error("Entrega agotada id=%s; requiere revision", noticia.get("id"))
-            raise RuntimeError(f"Entrega agotada de noticia {noticia.get('id')}; requiere revision")
+            problems.append(f"Entrega agotada de noticia {noticia.get('id')}; requiere revision")
+            continue
         if delivery.get("retry_at", 0) > time.time():
-            raise RuntimeError("Telegram solicito esperar antes del proximo intento")
+            problems.append("Telegram solicito esperar antes del proximo intento")
+            return sha, problems, True
 
         # Unique ownership prevents two writers from reconciling the same claim.
         delivery.update(status="sending", attempts=delivery.get("attempts", 0) + 1,
@@ -1178,8 +1243,22 @@ def deliver_pending(noticias, sha):
         sha = commit_noticias(noticias, sha)
         if delivery["status"] != "sent":
             logger.error("Entrega %s id=%s error=%s", delivery["status"], noticia.get("id"), delivery.get("error"))
-            raise RuntimeError(f"Entrega {delivery['status']} de noticia {noticia.get('id')}")
+            problems.append(f"Entrega {delivery['status']} de noticia {noticia.get('id')}")
+            return sha, problems, True
         time.sleep(3)
+    return sha, problems, False
+
+
+def _raise_problems(problems):
+    if problems:
+        extra = f" (+{len(problems) - 1} más)" if len(problems) > 1 else ""
+        raise RuntimeError(problems[0] + extra)
+
+
+def deliver_pending(noticias, sha):
+    """Drain the outbox; fail after the drain if any record needs attention."""
+    sha, problems, _ = _drain_outbox(noticias, sha)
+    _raise_problems(problems)
     return sha
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1198,24 +1277,37 @@ def job():
     if not TELEGRAM_TOKEN.strip() or not TELEGRAM_CHAT_ID.strip():
         raise RuntimeError("Falta configurar Telegram")
 
+    error = None
     try:
         _process_news(noticias_existentes, sha)
-    finally:
-        # Publish once, including confirmed sends before a later delivery failed.
-        # Reload durable state: the in-memory copy may contain an uncommitted ACK.
+    except Exception as exc:
+        error = exc
+    # Publish once, including confirmed sends before a later delivery failed.
+    # Reload durable state: the in-memory copy may contain an uncommitted ACK.
+    try:
         persisted, _ = get_github_file()
         if persisted is None:
             raise RuntimeError("No se pudo verificar el estado persistido para publicar")
         publish_news(persisted)
+    except Exception as exc:
+        if error is None:
+            raise
+        # No tapar la causa original con el fallo de publicación.
+        logger.error("Publicacion tambien fallo (%s) tras el error del proceso", type(exc).__name__)
+    if error is not None:
+        raise error
     logger.info("=== Job completado ===")
 
 
 def _process_news(noticias_existentes, sha):
-    sha = deliver_pending(noticias_existentes, sha)
+    # Stuck records are skipped, not fatal: new news is still collected and staged.
+    sha, problems, telegram_down = _drain_outbox(noticias_existentes, sha)
 
-    # Estructuras de deduplicación (3 capas)
-    published_links = {n.get("enlace_original", "") for n in noticias_existentes}
-    claves_publicadas = {n.get("dedup_key", "") for n in noticias_existentes if n.get("dedup_key")}
+    # Estructuras de deduplicación (3 capas). `dedup_alias` guarda URLs y claves
+    # de duplicados ya eliminados del historial; cada una va al set que le toca.
+    alias = {a for n in noticias_existentes for a in n.get("dedup_alias", [])}
+    published_links = {n.get("enlace_original", "") for n in noticias_existentes} | alias
+    claves_publicadas = {n.get("dedup_key", "") for n in noticias_existentes if n.get("dedup_key")} | alias
     logger.info(f"URLs ya publicadas: {len(published_links)} | claves de contenido: {len(claves_publicadas)}")
 
     # Stage new records before any external delivery.
@@ -1345,9 +1437,18 @@ def _process_news(noticias_existentes, sha):
             logger.info(f"Noticia descartada por pre-filtro off-topic: {item['title']}")
             continue
 
+        # Pre-chequeo barato: un CVE del TÍTULO original que ya está en la ventana
+        # reciente acabaría descartado por es_noticia_similar DESPUÉS de gastar la
+        # llamada IA. Solo el título: un contenido tipo Patch Tuesday lista decenas.
+        cves_titulo = _cves_de(item['title'])
+        if cves_titulo & _cves_recientes(noticias_actualizadas):
+            drop_stats["similar"] += 1
+            logger.info(f"Noticia omitida antes de IA (CVE ya publicado): {item['title']}")
+            continue
+
         # ── Resumen y filtro de relevancia con Groq ───────────────────────────
         llamadas_ia += 1
-        titulo_ai, resumen_ai = summarize_news(item['title'], item.get('content', item['title']))
+        titulo_ai, resumen_ai = summarize_news(item['title'], item.get('content') or item['title'])
 
         if titulo_ai == "RECHAZAR":
             drop_stats["ia_rechazo"] += 1
@@ -1377,9 +1478,9 @@ def _process_news(noticias_existentes, sha):
         iocs = extract_iocs(full_text, source_url=item.get('link'))
         iocs_text = format_iocs_telegram(iocs)
         
-        # Clasificar TTPs MITRE
+        # Clasificar TTPs MITRE (solo seguridad: en IA/Tech gastaba cuota para "NONE")
         ttps = []
-        if llamadas_ia < MAX_LLAMADAS_IA:
+        if categoria == "Ciberseguridad" and llamadas_ia < MAX_LLAMADAS_IA:
             llamadas_ia += 1
             ttps = tag_ttps(titulo_ai, resumen_ai)
         ttps_text = format_ttps_telegram(ttps)
@@ -1461,13 +1562,20 @@ def _process_news(noticias_existentes, sha):
     if count == 0 and not dups and not recats:
         logger.info("Sin noticias nuevas, duplicados ni categorías que corregir.")
         logger.info(f"=== Resumen descartes: {drop_stats} ===")
+        _raise_problems(problems)
         return
 
     sha = commit_noticias(noticias_actualizadas, sha, nuevas=count)
-    deliver_pending(noticias_actualizadas, sha)
+    if telegram_down:
+        logger.warning("Telegram no disponible en este run; las noticias nuevas quedan en cola")
+    else:
+        # Full rescan: reports stuck records again, plus any new send failure.
+        sha, problems, _ = _drain_outbox(noticias_actualizadas, sha)
     logger.info(f"Publicadas: {count} | por medio: {dict(medio_counts)} | dups eliminados: {len(dups)}"
                 f" | recategorizadas: {len(recats)}")
     logger.info(f"Descartes: {drop_stats}")
+    # Fail the run (alert) only after everything else was collected and staged.
+    _raise_problems(problems)
 
 if __name__ == "__main__":
     try:

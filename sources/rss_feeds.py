@@ -63,6 +63,14 @@ def parse_date(date_str):
     return None
 
 
+def html_a_texto(html):
+    """Texto plano de un campo RSS con HTML: las etiquetas gastaban el límite de
+    4000 caracteres del prompt y colaban URLs de imágenes/tracking como IoCs."""
+    if "<" not in html:
+        return html.strip()
+    return BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
+
+
 def is_recent(date_str, max_age_days=5, *, now=None):
     """Inclusive UTC window. Missing/invalid dates return False in this helper."""
     dt = parse_date(date_str)
@@ -147,7 +155,7 @@ def scrape_rss_feed(url, source_name, limit=8, max_age_days=5, *, now=None):
                 'title': title,
                 'link': link,
                 'source': source_name,
-                'content': description
+                'content': html_a_texto(description)
             })
         return items
 
@@ -198,7 +206,7 @@ def scrape_rss2json(rss_url, source_name, max_age_days=3, *, now=None):
                 'title': title,
                 'link': link,
                 'source': source_name,
-                'content': description
+                'content': html_a_texto(description)
             })
         return items
     except Exception as e:
