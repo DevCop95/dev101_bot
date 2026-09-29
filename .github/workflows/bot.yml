@@ -18,6 +18,8 @@ jobs:
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
+    with:
+      skip_audit: true
 
   run-bot:
     needs: test

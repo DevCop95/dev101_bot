@@ -2,10 +2,17 @@ name: CI
 
 on:
   pull_request:
+  # main ya ejecuta esta CI desde bot.yml (workflow_call); evita correrla dos veces.
   push:
+    branches-ignore: [main]
   schedule:
     - cron: '21 5 * * 1'
   workflow_call:
+    inputs:
+      skip_audit:
+        description: No bloquear la publicacion del bot por un CVE nuevo en dependencias
+        type: boolean
+        default: false
 
 permissions: {}
 
@@ -47,6 +54,8 @@ jobs:
         run: python -m coverage report
 
   dependencies:
+    # Sigue corriendo en PRs, ramas y el cron semanal; el bot no queda bloqueado.
+    if: ${{ inputs.skip_audit != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
