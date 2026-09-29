@@ -259,7 +259,7 @@ export class WebhookState {
       } else if (text === "/noticias") {
         status = await triggerGithubAction(this.env.GH_PAT_ENV)
         notificationText = {
-          dispatched: "Buscando noticias... llegan en unos segundos.",
+          dispatched: "Job lanzado: tests + busqueda de noticias, llegan en unos minutos.",
           dispatch_failed: "GitHub rechazo el job. Revisa GitHub Actions antes de intentarlo de nuevo.",
           uncertain: "No se pudo confirmar el job. Revisa GitHub Actions antes de volver a pedir noticias."
         }[status]
