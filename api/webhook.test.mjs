@@ -625,3 +625,16 @@ test("Wrangler declares SQLite binding and migration independently in both envir
     assert.ok(section.includes('new_sqlite_classes = ["WebhookState"]'))
   }
 })
+test("scheduled handler triggers GitHub dispatch when GH_PAT_ENV is present", async t => {
+  const h = harness(t)
+  const status = await worker.scheduled({}, h.env, {})
+  assert.equal(status, "dispatched")
+  assert.equal(h.count("github"), 1)
+})
+
+test("scheduled handler fails closed without GH_PAT_ENV", async t => {
+  const h = harness(t, { GH_PAT_ENV: "" })
+  const status = await worker.scheduled({}, h.env, {})
+  assert.equal(status, "dispatch_failed")
+  assert.equal(h.count("github"), 0)
+})

@@ -2,6 +2,9 @@ name = "dev101_bot"
 main = "api/webhook.js"
 compatibility_date = "2025-01-01"
 
+[triggers]
+crons = ["0 */3 * * *"]
+
 # Configure secrets separately in each environment (never commit their values):
 # TELEGRAM_WEBHOOK_SECRET, TELEGRAM_TOKEN_ENV, GH_PAT_ENV,
 # TELEGRAM_CHAT_ID_ENV; optionally TELEGRAM_USER_ID_ENV (positive numeric ID).
@@ -16,6 +19,9 @@ new_sqlite_classes = ["WebhookState"]
 
 [env.production]
 workers_dev = true
+
+[env.production.triggers]
+crons = ["0 */3 * * *"]
 
 # Bindings do not inherit from the default environment.
 [[env.production.durable_objects.bindings]]

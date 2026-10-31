@@ -167,6 +167,14 @@ export default {
       if (error instanceof Response) return error
       return reply("unavailable", 503, {}, { "Retry-After": "60" })
     }
+  },
+
+  async scheduled(event, env, ctx) {
+    const ghPat = env.GH_PAT_ENV
+    if (typeof ghPat === "string" && ghPat.trim()) {
+      return await triggerGithubAction(ghPat)
+    }
+    return "dispatch_failed"
   }
 }
 
