@@ -1,7 +1,7 @@
 name: News Bot
 on:
   schedule:
-    - cron: '0 */3 * * *'
+    - cron: '23 */3 * * *'
   workflow_dispatch:
     inputs:
       reconcile_id:
@@ -52,7 +52,7 @@ jobs:
         run: 'python -m pip install --require-hashes --only-binary=:all: -r requirements.txt'
 
       - name: Reconcile stuck outbox item (optional)
-        if: ${{ inputs.reconcile_id != '' && inputs.reconcile_action != '' && inputs.reconcile_action != 'none' }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.reconcile_id && inputs.reconcile_action && inputs.reconcile_action != 'none' }}
         env:
           PYTHON_DOTENV_DISABLED: '1'
           GIT_TOKEN:              ${{ secrets.GIT_TOKEN || secrets.GH_PAT }}
