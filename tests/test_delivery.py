@@ -413,6 +413,86 @@ class DeliveryTests(unittest.TestCase):
             run_job.ensure_state_branch()
         self.assertEqual(self.stored, self.public)
 
+    def test_history_retains_up_to_3000_published_items_plus_unresolved(self):
+        self.assertEqual(run_job.MAX_HISTORIAL_NOTICIAS, 3000)
+        items = [{"id": i, "titulo": f"UniqueStory{i}", "enlace_original": f"https://example.test/{i}"}
+                 for i in range(3005, 0, -1)]
+        run_job.publish_news(items)
+        self.assertEqual(len(self.public), 3000)
+        self.assertEqual(self.public[0]["id"], 3005)
+        self.assertEqual(self.public[-1]["id"], 6)
+
+        # _process_news trims prior confirmed history to 3000 before draining the newly staged item,
+        # and publish_news caps main/noticias.json at 3000.
+        self.stored = items[:3002]
+        self.item.update(title="Brand new advisory 9999", link="https://example.test/new-9999")
+        run_job.job()
+        self.assertEqual(len(self.stored), 3001)
+        self.assertEqual(len(self.public), 3000)
+
+    def test_tracking_url_variant_is_skipped_and_markdown_underscores_escaped(self):
+        self.stored = [{"id": 1, "titulo": "Historia previa", "enlace_original": "https://www.example.test/report/"}]
+        self.item.update(link="http://example.test/report?utm_source=rss&fbclid=abc#top")
+        with patch.object(run_job, "summarize_news") as summarize:
+            run_job.job()
+        summarize.assert_not_called()
+
+        self.item.update(
+            title="Apache mod_ssl flaw",
+            content="Payload seen at hxxps://evil[.]org/drop_x64.bin",
+            link="https://example.test/mod_ssl(v2)",
+        )
+        with patch.object(run_job, "summarize_news",
+                          return_value=("Fallo en mod_ssl permite RCE", "Afecta a mod_ssl_2 en servidores web.")):
+            run_job.job()
+        sent_text = self.telegram_calls[-1]["text"]
+        self.assertIn("mod*\\_*ssl", sent_text)
+        self.assertIn("mod\\_ssl\\_2", sent_text)
+        self.assertIn("drop\\_x64\\[.]bin", sent_text)
+        self.assertIn("mod_ssl%28v2%29", sent_text)
+
+    def test_old_stuck_record_stops_failing_job_after_24h_and_can_be_reconciled(self):
+        # Un registro incierto de hace >24h sigue sin reenviarse, pero ya no rompe el job cada 3h
+        self.stored = [{
+            "id": 10,
+            "fecha": "2020-01-01T00:00:00Z",
+            "titulo": "Stuck old story",
+            "telegram": {"status": "uncertain", "text": "old text", "attempts": 1},
+        }]
+        run_job.job()
+        self.assertEqual(len(self.telegram_calls), 1)  # solo la noticia nueva del run, nunca la id=10
+        stuck = next(n for n in self.stored if n["id"] == 10)
+        self.assertEqual(stuck["telegram"]["status"], "uncertain")
+
+        # Reconciliación CAS: mark_sent publica en main y limpia text
+        self.sha = run_job.reconcile_outbox_record(self.stored, self.sha, 10, "mark_sent", message_id=777)
+        self.assertEqual(stuck["telegram"]["status"], "sent")
+        self.assertEqual(stuck["telegram"]["message_id"], 777)
+        self.assertNotIn("text", stuck["telegram"])
+        self.assertIn(10, [n["id"] for n in self.public])
+
+        # Reconciliación CAS: retry y drop
+        self.stored.append({
+            "id": 99, "fecha": "2026-10-30T00:00:00Z", "titulo": "Retry me",
+            "telegram": {"status": "failed", "text": "retry msg", "attempts": 5, "error": "http_500"},
+        })
+        self.sha = run_job.reconcile_outbox_record(self.stored, self.sha, 99, "retry")
+        rec99 = next(n for n in self.stored if n["id"] == 99)
+        self.assertEqual(rec99["telegram"]["status"], "pending")
+        self.assertEqual(rec99["telegram"]["attempts"], 0)
+        self.sha = run_job.reconcile_outbox_record(self.stored, self.sha, 99, "drop")
+        self.assertNotIn(99, [n["id"] for n in self.stored])
+
+    def test_parallel_rss_collection_preserves_order_and_isolates_errors(self):
+        scrapers = [
+            lambda: [{"title": "first"}],
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            lambda: [{"title": "third"}],
+        ]
+        with self.assertLogs(run_job.logger, level="ERROR"):
+            collected = run_job._collect_rss_feeds(scrapers)
+        self.assertEqual([x["title"] for x in collected], ["first", "third"])
+
 
 if __name__ == "__main__":
     unittest.main()

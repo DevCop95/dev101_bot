@@ -11,7 +11,7 @@ import re
 
 logger = logging.getLogger(__name__)
 
-# Inicializamos el scraper de Cloudflare una sola vez
+# Inicializamos el scraper de Cloudflare una sola vez (con pool ampliado para concurrencia)
 scraper = cloudscraper.create_scraper(
     browser={
         'browser': 'chrome',
@@ -19,6 +19,9 @@ scraper = cloudscraper.create_scraper(
         'desktop': True
     }
 )
+_http_adapter = requests.adapters.HTTPAdapter(pool_connections=25, pool_maxsize=25)
+scraper.mount('https://', _http_adapter)
+scraper.mount('http://', _http_adapter)
 
 HEADERS = {
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
@@ -139,6 +142,8 @@ def scrape_rss_feed(url, source_name, limit=8, max_age_days=5, *, now=None):
             description = entry.description.text.strip() if entry.description else ""
             if not description and entry.content:
                 description = entry.content.text.strip()
+            if not description and entry.find('encoded'):
+                description = entry.find('encoded').text.strip()
             if not description and entry.summary:
                 description = entry.summary.text.strip()
             

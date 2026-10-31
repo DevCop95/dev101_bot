@@ -5,6 +5,7 @@
 
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from bs4 import BeautifulSoup
 from sources.rss_feeds import scraper, HEADERS, parse_date
@@ -85,7 +86,16 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL, *, now=None):
                 if not _is_recent(pub_dt, now=now):
                     continue
 
-                first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+                non_empty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+                first_line = non_empty_lines[0] if non_empty_lines else ""
+                # Muchos canales encabezan con banners tipo "🚨 BREAKING 🚨" o "[ALERTA]":
+                # si la primera línea casi no tiene texto alfanumérico, usar la siguiente
+                # para no colapsar noticias distintas bajo la misma clave de título.
+                if len(non_empty_lines) > 1 and len(re.sub(r'[^A-Za-z0-9ÁÉÍÓÚÑáéíóúñ]', '', first_line)) < 15:
+                    for extra_line in non_empty_lines[1:]:
+                        if len(re.sub(r'[^A-Za-z0-9ÁÉÍÓÚÑáéíóúñ]', '', extra_line)) >= 15:
+                            first_line = extra_line
+                            break
                 if len(first_line) > 120:
                     candidate = first_line[:117].rsplit(" ", 1)[0].rstrip(" ,;:-—.")
                     title = f"{candidate}..." if candidate else (first_line[:117] + "...")
@@ -108,13 +118,19 @@ def _scrape_channel(channel, source_name, limit=ITEMS_PER_CHANNEL, *, now=None):
 
 
 def scrape_telegram_channels(*, now=None):
-    """Monitorea canales públicos de Telegram via su preview web oficial."""
+    """Monitorea canales públicos de Telegram en paralelo conservando el orden."""
     all_items = []
     now = now or datetime.now(timezone.utc)
-    for ch_info in TELEGRAM_CHANNELS:
-        source_name = f"TG: {ch_info['name']}"
-        items = _scrape_channel(ch_info["channel"], source_name, now=now)
-        all_items.extend(items)
+    if not TELEGRAM_CHANNELS:
+        return []
+    workers = min(5, len(TELEGRAM_CHANNELS))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = [
+            pool.submit(_scrape_channel, ch_info["channel"], f"TG: {ch_info['name']}", now=now)
+            for ch_info in TELEGRAM_CHANNELS
+        ]
+        for fut in futures:
+            all_items.extend(fut.result())
 
     logger.info(f"Telegram Monitor: {len(all_items)} items totales de {len(TELEGRAM_CHANNELS)} canales")
     return all_items

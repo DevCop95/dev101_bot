@@ -1,10 +1,17 @@
 name: News Bot
 on:
-  push:
-    branches: [main]
   schedule:
     - cron: '0 */3 * * *'
   workflow_dispatch:
+    inputs:
+      reconcile_id:
+        description: 'ID opcional de noticia bloqueada en bot-state a reconciliar'
+        required: false
+        default: ''
+      reconcile_action:
+        description: 'Accion de reconciliacion (none, mark_sent, retry, drop)'
+        required: false
+        default: 'none'
 
 permissions: {}
 
@@ -43,6 +50,15 @@ jobs:
 
       - name: Install dependencies
         run: 'python -m pip install --require-hashes --only-binary=:all: -r requirements.txt'
+
+      - name: Reconcile stuck outbox item (optional)
+        if: ${{ inputs.reconcile_id != '' && inputs.reconcile_action != '' && inputs.reconcile_action != 'none' }}
+        env:
+          PYTHON_DOTENV_DISABLED: '1'
+          GIT_TOKEN:              ${{ secrets.GIT_TOKEN || secrets.GH_PAT }}
+          RECONCILE_ID:           ${{ inputs.reconcile_id }}
+          RECONCILE_ACTION:       ${{ inputs.reconcile_action }}
+        run: python tools/reconcile_outbox.py --id "$RECONCILE_ID" --action "$RECONCILE_ACTION"
 
       - name: Run bot
         env:

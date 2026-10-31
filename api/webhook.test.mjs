@@ -604,6 +604,15 @@ test("TTL is an explicit at-most-once boundary: an expired ID can be dispatched 
   assert.equal(h.storage.alarmTime, h.now + TTL)
 })
 
+test("group commands with @bot_username suffix are normalized and dispatched", async t => {
+  const h = harness(t)
+  assert.equal((await result(await h.send(update(1, "/noticias@dev101_bot")))).status, "dispatched")
+  assert.equal((await result(await h.send(update(2, "/help@dev101_bot extra")))).status, "handled")
+  assert.equal((await result(await h.send(update(3, "/start@Dev101_Bot")))).status, "handled")
+  assert.equal(h.count("github"), 1)
+  assert.equal(h.count("telegram"), 3)
+})
+
 test("Wrangler declares SQLite binding and migration independently in both environments", async () => {
   const config = await readFile(new URL("../wrangler.toml", import.meta.url), "utf8")
   const [defaults, production] = config.split("[env.production]")

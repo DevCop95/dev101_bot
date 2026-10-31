@@ -106,6 +106,21 @@ class TestRunJob(unittest.TestCase):
         response = "### Título: Fallo en Foo\n- Resumen: Bar baz."
         self.assertEqual(run_job.parse_news_response(response), ("Fallo en Foo", "Bar baz."))
 
+    def test_parse_news_response_rechazar_formateado_y_titulo_multilinea(self):
+        for raw in ("RECHAZAR", "**RECHAZAR**", "RECHAZAR.", "RECHAZAR: noticia comercial\nSin relación técnica"):
+            with self.subTest(raw=raw):
+                self.assertEqual(run_job.parse_news_response(raw), ("RECHAZAR", None))
+        multi = "TÍTULO:\nFallo crítico en Ivanti Connect Secure\nRESUMEN:\nPermite ejecución remota."
+        self.assertEqual(run_job.parse_news_response(multi),
+                         ("Fallo crítico en Ivanti Connect Secure", "Permite ejecución remota."))
+
+    def test_palabra_colgante_con_puntuacion_al_truncar(self):
+        # Al cortar un titular largo, no debe quedar un verbo con dos puntos ("permite:")
+        title = "Vulnerabilidad crítica en pasarela corporativa permite: ejecutar comandos arbitrarios remotos en red"
+        truncated = run_job.smart_truncate_title(title, max_len=62)
+        self.assertFalse(truncated.endswith("permite:"))
+        self.assertFalse(truncated.endswith("permite"))
+
     def test_unicode_de_no_separacion_se_normaliza(self):
         titulo, resumen = run_job.parse_news_response(
             "TÍTULO: Kiteworks pide cierre de 6 horas ante zero‑day\nRESUMEN: Pago de 100 €.")
@@ -449,6 +464,73 @@ class TestDeduplicacion(unittest.TestCase):
             existentes)
         self.assertFalse(es_sim)
 
+    def test_normalizar_url_elimina_tracking_y_unifica_esquema(self):
+        u1 = run_job.normalizar_url("http://www.example.com/news/post/?utm_source=x&fbclid=1&id=7#frag")
+        u2 = run_job.normalizar_url("https://example.com/news/post?id=7&utm_medium=social")
+        self.assertEqual(u1, u2)
+        self.assertEqual(u1, "https://example.com/news/post?id=7")
+
+    def test_clave_contenido_prioriza_cve_del_titulo_e_ignora_banner_vacio(self):
+        # El cuerpo menciona un CVE viejo de contexto, pero el titular nombra el CVE principal
+        k_art = run_job.clave_contenido("Critical RCE in Ivanti (CVE-2026-4444)",
+                                        "Similar to historical CVE-2024-21887, affects CVE-2026-4444")
+        k_nvd = run_job.clave_contenido("CVE-2026-4444 — CRITICAL (9.8)", "RCE in Ivanti")
+        self.assertEqual(k_art, "cve:cve-2026-4444")
+        self.assertEqual(k_art, k_nvd)
+        # Un banner suelto no debe generar una clave genérica que bloquee otros posts
+        self.assertEqual(run_job.clave_contenido("🚨 BREAKING 🚨"), "")
+        k_banner = run_job.clave_contenido("🚨 BREAKING 🚨", "Qilin ransomware hits Synnovis hospitals")
+        self.assertIn("qilin", k_banner)
+
+    def test_es_noticia_similar_detecta_cve_en_dedup_key_aunque_ia_lo_omita(self):
+        existentes = [{
+            "titulo": "Ejecución remota en Ivanti Connect Secure",
+            "resumen": "Permite ejecutar código sin autenticación.",
+            "dedup_key": "cve:cve-2026-4444",
+            "fuente": "NVD (NIST)",
+        }]
+        es_sim, _ = run_job.es_noticia_similar(
+            "Nuevo fallo crítico en dispositivos Ivanti",
+            "Atacantes explotan la vulnerabilidad remotamente.",
+            existentes,
+            source_nuevo="Bleeping Computer",
+            cves_extra={"cve-2026-4444"},
+        )
+        self.assertTrue(es_sim)
+
+    def test_es_noticia_similar_chequeo3_funciona_sin_cve_y_respeta_vendors_frecuentes(self):
+        # Dos medios o el mismo medio cubriendo Qilin + Synnovis sin CVE
+        existentes = [{
+            "titulo": "Ransomware Qilin paraliza hospitales de Synnovis en Londres",
+            "resumen": "El ataque cifró servidores clínicos y retrasó operaciones médicas.",
+            "fuente": "The Record",
+        }]
+        es_sim, _ = run_job.es_noticia_similar(
+            "Grupo Qilin publica datos robados al proveedor médico Synnovis",
+            "Los operadores filtraron muestras clínicas tras cifrar servidores hospitalarios.",
+            existentes,
+            source_nuevo="The Record",
+        )
+        self.assertTrue(es_sim)
+        # Pero compartir solo Microsoft + Windows con solape moderado (0.25-0.34) NO debe activar Chequeo 3
+        win_exist = [{
+            "titulo": "Microsoft corrige fallo en Windows Defender",
+            "resumen": "La actualización mensual refuerza la protección local del motor antimalware corporativo frente a abusos de controladores en portátiles.",
+            "fuente": "Bleeping Computer",
+        }]
+        nuevo_tit = "Microsoft anuncia función de copia en Windows"
+        nuevo_res = "La herramienta mensual mejora la recuperación local de carpetas personales mediante instantáneas cifradas automáticas en equipos domésticos."
+        sim_win = run_job.calcular_similitud(
+            f"{nuevo_tit} {nuevo_res}",
+            f"{win_exist[0]['titulo']} {win_exist[0]['resumen']}",
+        )
+        self.assertGreaterEqual(sim_win, 0.25)
+        self.assertLess(sim_win, 0.35)
+        es_sim_win, _ = run_job.es_noticia_similar(
+            nuevo_tit, nuevo_res, win_exist, source_nuevo="The Hacker News",
+        )
+        self.assertFalse(es_sim_win)
+
 
 class TestDedupRetroactivo(unittest.TestCase):
     def _n(self, id, titulo, resumen=""):
@@ -511,14 +593,16 @@ class TestDedupRetroactivo(unittest.TestCase):
         self.assertEqual(elim2, [])
         self.assertEqual(limpia2[0]["dedup_alias"], ["https://b/1", "txt:malware smartloader"])
 
-    def test_deduplicar_2000_noticias_es_rapido(self):
+    def test_deduplicar_3000_noticias_es_rapido(self):
         import time as _time
         noticias = [self._n(i, f"Noticia {i} sobre Producto{i} y Vendor{i % 50}",
                             f"Resumen {i} con Actor{i % 300} y CVE-2026-{10000 + i}")
-                    for i in range(2000, 0, -1)]
+                    for i in range(3000, 0, -1)]
         inicio = _time.monotonic()
-        run_job.deduplicar_noticias(noticias)
-        self.assertLess(_time.monotonic() - inicio, 60)
+        limpia, elim = run_job.deduplicar_noticias(noticias)
+        self.assertEqual(len(limpia), 3000)
+        self.assertEqual(elim, [])
+        self.assertLess(_time.monotonic() - inicio, 10)
 
 
 class TestDedupNombresPropios(unittest.TestCase):
@@ -559,6 +643,46 @@ class TestDedupNombresPropios(unittest.TestCase):
         a = self._n("Campaña FortiBleed roba credenciales", "FortiBleed roba de FortiGate Fortinet", "A")
         b = self._n("FortiBleed ataca FortiGate", "FortiBleed credenciales Fortinet FortiGate", "B")
         self.assertFalse(run_job.son_duplicadas(a, b))
+
+    def test_canales_telegram_distintos_si_se_deduplican(self):
+        # Dos canales distintos de Telegram cubriendo la misma historia parafraseada
+        a = {
+            "id": 2,
+            "fecha": "2026-10-20T12:00:00Z",
+            "titulo": "Ransomware Qilin paraliza hospitales de Synnovis en Londres",
+            "resumen": "El grupo Qilin cifró sistemas clínicos de Synnovis afectando cirugías.",
+            "fuente": "TG: vx-underground",
+        }
+        b = {
+            "id": 1,
+            "fecha": "2026-10-19T18:00:00Z",
+            "titulo": "Grupo Qilin reivindica ataque contra el proveedor médico Synnovis",
+            "resumen": "Operadores de Qilin publicaron muestras robadas a Synnovis tras interrumpir clínicas.",
+            "fuente": "TG: Security Harvester",
+        }
+        df = run_job._df_nombres_propios([a, b])
+        self.assertTrue(run_job.son_duplicadas(a, b, df=df))
+        limpia, elim = run_job.deduplicar_noticias([a, b])
+        self.assertEqual([n["id"] for n in limpia], [2])
+        self.assertEqual([n["id"] for n in elim], [1])
+
+    def test_guardia_temporal_30_dias_no_fusiona_historias_lejanas(self):
+        a = {
+            "id": 2,
+            "fecha": "2026-10-25T12:00:00Z",
+            "titulo": "Nueva campaña FortiBleed roba credenciales",
+            "resumen": "FortiBleed ataca equipos FortiGate a gran escala con nuevos vectores.",
+            "fuente": "Bleeping Computer",
+        }
+        b = {
+            "id": 1,
+            "fecha": "2026-08-01T12:00:00Z",
+            "titulo": "FortiBleed ataca FortiGate",
+            "resumen": "La campaña FortiBleed roba credenciales de FortiGate a gran escala.",
+            "fuente": "The Hacker News",
+        }
+        df = run_job._df_nombres_propios([a, b])
+        self.assertFalse(run_job.son_duplicadas(a, b, df=df))
 
 
 class TestDiversidad(unittest.TestCase):

@@ -183,6 +183,21 @@ class FeedTests(OfflineTest):
         self.assertEqual(items[0]["content"], "CVE-2024-6387 patch available")
         self.assertEqual(rss.html_a_texto('<p>Hi <img src="https://t.example/x.png"> there</p>'), "Hi there")
 
+    def test_rss_content_encoded_fallback_when_description_empty(self):
+        xml_encoded = (
+            b'<?xml version="1.0" encoding="UTF-8"?>'
+            b'<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/">'
+            b'<channel><item><title>Encoded post</title>'
+            b'<link>https://news.example.org/encoded</link>'
+            b'<description></description>'
+            b'<content:encoded><![CDATA[<p>Technical body from content:encoded</p>]]></content:encoded>'
+            b'</item></channel></rss>'
+        )
+        with patch.object(rss.scraper, "get", return_value=response(content=xml_encoded)):
+            items = rss.scrape_rss_feed("https://news.example.org/rss", "RSS", now=NOW)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["content"], "Technical body from content:encoded")
+
     def test_rss_bytes_invalid_entries_do_not_consume_limit(self):
         with patch.object(rss.scraper, "get", return_value=response(content=RSS_FIXTURE)):
             with self.assertLogs(rss.logger, level="WARNING"):
@@ -266,6 +281,28 @@ class TelegramTests(OfflineTest):
             with self.subTest(dt=dt):
                 self.assertEqual(tg._is_recent(dt, now=NOW), expected)
         self.assertTrue(tg._is_recent(NOW.replace(tzinfo=None), now=NOW))
+
+    def test_telegram_banner_first_line_skips_to_real_headline(self):
+        banner_html = (
+            b'<div class="tgme_widget_message" data-post="ch/99">'
+            b'<div class="tgme_widget_message_text">&#x1F6A8; BREAKING &#x1F6A8;<br/>'
+            b'Qilin ransomware claims Synnovis healthcare breach in London clinics</div>'
+            b'<a class="tgme_widget_message_date" href="https://t.me/ch/99">'
+            b'<time datetime="2026-09-05T10:00:00+00:00"></time></a></div>'
+        )
+        with patch.object(tg.scraper, "get", return_value=response(content=banner_html)):
+            items = tg._scrape_channel("ch", "TG", now=NOW)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "Qilin ransomware claims Synnovis healthcare breach in London clinics")
+
+    def test_parallel_telegram_channels_preserve_channel_order(self):
+        def fake_scrape(channel, source_name, **kwargs):
+            return [{"title": f"Post {channel}", "link": f"https://t.me/{channel}/1",
+                     "source": source_name, "content": f"Security post from {channel}"}]
+        with patch.object(tg, "_scrape_channel", side_effect=fake_scrape):
+            items = tg.scrape_telegram_channels(now=NOW)
+        expected = [f"TG: {c['name']}" for c in tg.TELEGRAM_CHANNELS]
+        self.assertEqual([i["source"] for i in items], expected)
 
 
 class NvdTests(OfflineTest):
@@ -452,10 +489,23 @@ class ApiContractsTests(OfflineTest):
                    "name": "unknown", "link": "https://viz.greynoise.io/ip/71.6.135.131", "last_seen": "2026-09-05", "message": "Success"}
         with patch.object(greynoise.requests, "get", side_effect=[response(content=b"not-json"), response(payload)]):
             with self.assertLogs(greynoise.logger, level="ERROR"):
-                self.assertEqual(len(greynoise._fallback_community_lookup()), 1)
+                items = greynoise._fallback_community_lookup(now=NOW)
+                self.assertEqual(len(items), 1)
+                self.assertIn("seen=2026-09-05", items[0]["link"])
         with patch.object(greynoise.requests, "get", return_value=response(status=404)):
             with self.assertNoLogs(greynoise.logger, level="WARNING"):
-                self.assertEqual(greynoise._fallback_community_lookup(), [])
+                self.assertEqual(greynoise._fallback_community_lookup(now=NOW), [])
+
+    def test_greynoise_urls_rotate_by_utc_date(self):
+        payload = {"complete": True, "count": 3, "query": "classification:malicious", "data": []}
+        day1 = datetime(2026, 9, 5, 12, 0, tzinfo=timezone.utc)
+        day2 = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+        with patch.object(greynoise, "GREYNOISE_API_KEY", "offline-fixture"), patch.object(greynoise.requests, "get", return_value=response(payload)):
+            items_d1 = greynoise.scrape_greynoise_trends(now=day1)
+            items_d2 = greynoise.scrape_greynoise_trends(now=day2)
+        self.assertIn("date=2026-09-05", items_d1[0]["link"])
+        self.assertIn("date=2026-09-06", items_d2[0]["link"])
+        self.assertNotEqual(items_d1[0]["link"], items_d2[0]["link"])
 
 
 class SeverityTests(OfflineTest):
@@ -502,6 +552,9 @@ class SeverityTests(OfflineTest):
         self.assertEqual(severity.classify_severity("Critical security flaw in router"), "CRITICA")
         self.assertEqual(severity.classify_severity("Vulnerabilidad de severidad baja en plugin"), "BAJA")
         self.assertEqual(severity.classify_severity("Fallo de baja severidad corregido en OpenSSL"), "BAJA")
+        # El verbo español "critica" no debe disparar severidad CRITICA
+        self.assertNotEqual(severity.classify_severity("CEO critica a OpenAI por su nuevo modelo"), "CRITICA")
+        self.assertEqual(severity.classify_severity("Investigador critica el diseño de un agente IA"), "BAJA")
 
     def test_unaccented_keywords_match_correctly(self):
         self.assertEqual(severity.classify_severity("ejecucion remota de codigo"), "ALTA")
@@ -536,10 +589,12 @@ class IocTests(OfflineTest):
         self.assertNotIn("raw.github.com", results["domain"])
 
     def test_security_media_and_source_url_excluded_from_iocs(self):
-        text = "Visto en https://unit42.paloaltonetworks.com/post y https://elladodelmal.com/articulo atacando con evil.org"
+        text = ("Visto en https://unit42.paloaltonetworks.com/post, https://openai.com/blog "
+                "y https://elladodelmal.com/articulo atacando con evil.org")
         results = ioc.extract_iocs(text, source_url="https://unit42.paloaltonetworks.com/feed")
         self.assertEqual(results.get("domain"), ["evil.org"])
         self.assertNotIn("unit42.paloaltonetworks.com", results.get("domain", []))
+        self.assertNotIn("openai.com", results.get("domain", []))
         self.assertNotIn("elladodelmal.com", results.get("domain", []))
 
     def test_defanged_urls_domains_ipv4_email_and_hashes(self):
@@ -634,11 +689,16 @@ class MitreTests(OfflineTest):
 
     def test_none_unknown_and_no_credentials_abstain(self):
         self.assertEqual(mitre.tag_ttps("News"), [])
-        for text in ("NONE", "T9999 - Unknown", "T1059.999 - Unknown", "T1059.0099 - Malformed"):
+        for text in ("NONE", None, "T9999 - Unknown", "T1059.999 - Unknown", "T1059.0099 - Malformed"):
             with self.subTest(text=text):
                 result = types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text))])
                 with patch.object(mitre, "GROQ_API_KEYS", ["offline-fixture"]), patch.object(mitre, "groq_chat", return_value=result):
                     self.assertEqual(mitre.tag_ttps("News"), [])
+        # Bulleted / bolded LLM lines are parsed cleanly
+        formatted = "- **T1059.009** - Cloud API\n1. `T1651` — Cloud Admin"
+        result = types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=formatted))])
+        with patch.object(mitre, "GROQ_API_KEYS", ["offline-fixture"]), patch.object(mitre, "groq_chat", return_value=result):
+            self.assertEqual([t["id"] for t in mitre.tag_ttps("News")], ["T1059.009", "T1651"])
 
     def test_max_five_unique_ids(self):
         ids = ["T1001", "T1002", "T1003", "T1005", "T1006", "T1007"]

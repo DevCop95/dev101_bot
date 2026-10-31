@@ -228,6 +228,15 @@ class ProviderTests(unittest.TestCase):
                 self.assertIsNone(providers.nvidia_chat(model="m"))
             self.assertNotIn(secret, " ".join(logs.output))
 
+    def test_model_fallback_strips_reasoning_effort_for_non_gpt_oss(self):
+        create = self.client(status_error(404), self.response)
+        with patch.object(providers, "GROQ_FALLBACK_MODEL", "llama-3.3-70b-versatile"):
+            result = providers.groq_chat(model="openai/gpt-oss-120b", reasoning_effort="low", messages=[])
+        self.assertIs(result, self.response)
+        self.assertEqual(create.call_args_list[0].kwargs.get("reasoning_effort"), "low")
+        self.assertNotIn("reasoning_effort", create.call_args_list[1].kwargs)
+        self.assertEqual(create.call_args_list[1].kwargs["model"], "llama-3.3-70b-versatile")
+
     def test_nvidia_malformed_response_returns_none(self):
         for body in ({}, {"choices": []}, {"choices": [{"message": {}}]}):
             response = MagicMock(status_code=200)

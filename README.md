@@ -213,14 +213,14 @@ Cada noticia pasa por este pipeline:
 5. **Extracción IoCs** → URLs, IPs públicas normalizadas, dominios, hashes y CVEs, incluyendo indicadores defanged. Una coincidencia no demuestra maliciosidad.
 6. **Clasificación MITRE** → IDs y nombres del catálogo Enterprise ATT&CK v17.1, incluyendo históricos. IDs desconocidos se descartan; la inferencia del modelo no es evidencia confirmada.
 7. **Severidad** → 🔴 Crítica / 🟠 Alta / 🟡 Media / 🟢 Baja / 🔵 Info
-8. **Deduplicación** → Similitud Jaccard + URLs ya publicadas
-9. **Persistencia** → GitHub `noticias.json` en la rama `bot-state`, mensaje preparado en estado `pending`
-10. **Distribución** → Reserva `sending`, envío a Telegram y confirmación `sent` con `message_id`
-11. **Publicación web** → Una instantánea en `main/noticias.json`, sin estados intermedios
+8. **Deduplicación multicapa** → URLs normalizadas (sin `utm_*`), claves de contenido con prioridad de CVE del título, ventana semántica de 400 noticias (con veto de CVE disjunto y nombres propios raros entre fuentes/canales TG) e índice invertido retroactivo
+9. **Persistencia** → GitHub `noticias.json` en la rama `bot-state`, hasta 3.000 noticias confirmadas más entregas pendientes
+10. **Distribución** → Reserva `sending`, envío a Telegram (con escape seguro de Markdown v1) y confirmación `sent` con `message_id`
+11. **Publicación web** → Una instantánea en `main/noticias.json` (máximo 3.000 noticias), sin estados intermedios
 
 La utilidad `iocs_to_stix()` está disponible y probada, pero el job no exporta bundles STIX automáticamente. RSS y Telegram comparan timestamps completos en UTC: se rechazan fechas futuras o inválidas y se conservan entradas sin fecha.
 
-El límite es de cinco noticias nuevas y doce llamadas lógicas de IA por ejecución, contando resumen y MITRE; los reintentos internos de proveedor pueden producir más peticiones HTTP. Groq aplica cooldown recuperable a fallos transitorios en vez de invalidar permanentemente una clave válida.
+El límite es de cinco noticias nuevas y dieciocho llamadas lógicas de IA por ejecución, contando resumen y MITRE; los reintentos internos de proveedor pueden producir más peticiones HTTP. Groq aplica cooldown recuperable a fallos transitorios en vez de invalidar permanentemente una clave válida.
 
 ### Recuperación de entregas
 
@@ -238,7 +238,7 @@ Los registros históricos sin campo `telegram` se consideran ya publicados y no 
 
 Una entrega bloqueada detiene el procesamiento y hace fallar Actions, en vez de perder noticias silenciosamente. Las entregas ya confirmadas sí se publican, leyendo el estado persistido y no una copia en memoria. Los pendientes anteriores se resuelven antes de recolectar más noticias. Un conflicto de SHA aborta sin sobrescribir datos ajenos; una escritura de GitHub con respuesta perdida se reconcilia por lectura antes de continuar. Si falla solo la publicación web, el siguiente run vuelve a intentarla sin reenviar las noticias a Telegram, incluso si no hay noticias nuevas.
 
-Para recuperar una entrega incierta, pausar los workflows y cualquier proceso local y revisar el mensaje en el chat. Corregir `noticias.json` **en la rama `bot-state`**, no en `main`. Si ya existe el mensaje, marcar `telegram.status` como `sent` y registrar el `message_id`. Solo si se confirma que no existe, cambiar a `pending`, conservar `text`, reiniciar `attempts` a 0 y eliminar `retry_at`/`error`. Hacer la corrección mediante una escritura que respete el SHA actual y reanudar el job. **No eliminar el campo `telegram` ni reiniciar estados a ciegas:** eso puede perder o duplicar entregas.
+Para recuperar una entrega incierta o agotada, se puede usar `python tools/reconcile_outbox.py --list` (y `--id <id> --action mark_sent|retry|drop`) o lanzar manualmente el workflow `News Bot` en GitHub Actions indicando `reconcile_id` y `reconcile_action`; ambos aplican escritura segura con verificación de SHA sobre `bot-state` y actualizan `main` si procede. Tras 24 horas, un registro bloqueado degrada la alerta a `WARNING` para no dejar Actions fallando perpetuamente cada 3 horas, sin reenviarlo jamás automáticamente. **No eliminar el campo `telegram` ni reiniciar estados a ciegas:** eso puede perder o duplicar entregas.
 
 Ambas ramas pueden ser públicas: no introducir secretos en mensajes ni metadatos. Los checkpoints se guardan en `bot-state`, fuera de la rama de Pages y del filtro del workflow `Split news data` (`main`, `noticias.json`). Así, las escrituras internas no disparan publicaciones concurrentes. Solo se modifica `main` una vez por ejecución si la instantánea pública cambió; la rama de estado no debe configurarse como fuente de Pages.
 

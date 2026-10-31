@@ -76,20 +76,21 @@ def tag_ttps(title, content=""):
         if r is None:
             return []
 
-        response = r.choices[0].message.content.strip()
+        response = (r.choices[0].message.content or "").strip()
         
-        if response.upper() == "NONE":
+        if not response or response.upper() == "NONE":
             return []
         
         ttps = []
         seen = set()
         for line in response.split("\n"):
-            line = line.strip()
+            line = re.sub(r'^[\s*\-•\d.)`#]+', '', line).strip()
+            line = re.sub(r'[*`]', '', line).strip()
             if not line:
                 continue
             
-            # Extraer ID de técnica (TXXXX o TXXXX.XXX)
-            match = re.match(r'(T\d{4}(?:\.\d{3})?)\s*[-–—:]\s*(.+)', line)
+            # Extraer ID de técnica (TXXXX o TXXXX.XXX) evitando dígitos extra (ej. T1059.0099)
+            match = re.match(r'(T\d{4}(?:\.\d{3})?)(?!\d)\s*[-–—:]\s*(.+)', line)
             if match:
                 tech_id = match.group(1)
                 if tech_id not in KNOWN_TECHNIQUES or tech_id in seen:

@@ -49,19 +49,32 @@ PATTERNS = {
 
 # Dominios a excluir (legítimos que aparecen en noticias y plataformas de fuentes)
 DOMAIN_WHITELIST = {
-    # Redes y Big Tech
+    # Redes, Big Tech, IA y Cloud legítimos
     "google.com", "twitter.com", "x.com", "github.com", "microsoft.com",
     "apple.com", "amazon.com", "facebook.com", "instagram.com", "youtube.com",
     "linkedin.com", "wikipedia.org", "reddit.com", "cloudflare.com",
-    "telegram.org", "t.me", "whatsapp.com",
-    # Fuentes y Medios de Ciberseguridad / IA
+    "telegram.org", "t.me", "whatsapp.com", "openai.com", "anthropic.com",
+    "nvidia.com", "meta.com", "ibm.com", "oracle.com", "intel.com", "amd.com",
+    "samsung.com", "adobe.com", "sap.com", "salesforce.com", "gitlab.com",
+    "bitbucket.org", "atlassian.com", "docker.com", "kubernetes.io",
+    "apache.org", "redhat.com", "ubuntu.com", "debian.org", "wordpress.org",
+    "wordpress.com", "mozilla.org", "chromium.org", "python.org", "pypi.org",
+    "npmjs.com", "vercel.com", "nextjs.org",
+    # Fuentes, Vendors y Medios de Ciberseguridad / IA
     "xataka.com", "bleepingcomputer.com", "thehackernews.com", "krebsonsecurity.com",
     "darkreading.com", "welivesecurity.com", "schneier.com", "wired.com", "nvd.nist.gov",
-    "exploit-db.com", "greynoise.io", "cve.mitre.org", "cybersecuritynews.es",
+    "exploit-db.com", "greynoise.io", "cve.mitre.org", "mitre.org", "cybersecuritynews.es",
     "incibe-cert.es", "incibe.es", "cisa.gov", "paloaltonetworks.com", "unit42.paloaltonetworks.com",
     "talosintelligence.com", "cisco.com", "huggingface.co", "dragonjar.org", "elladodelmal.com",
     "unaaldia.hispasec.com", "hispasec.com", "therecord.media", "sans.edu", "isc.sans.edu",
-    "substack.com", "iaenespanol.substack.com",
+    "substack.com", "iaenespanol.substack.com", "securityweek.com", "arstechnica.com",
+    "techcrunch.com", "theverge.com", "reuters.com", "bloomberg.com", "cybernews.com",
+    "helpnetsecurity.com", "infosecurity-magazine.com", "gbhackers.com", "cyberpress.org",
+    "virustotal.com", "shodan.io", "censys.io", "abuse.ch", "first.org", "owasp.org",
+    "fortinet.com", "fortiguard.com", "crowdstrike.com", "sentinelone.com", "kaspersky.com",
+    "sophos.com", "trendmicro.com", "mandiant.com", "rapid7.com", "tenable.com",
+    "qualys.com", "wiz.io", "snyk.io", "huntress.com", "veeam.com", "ivanti.com",
+    "sonicwall.com", "vmware.com", "broadcom.com", "akamai.com", "fastly.com",
     # CDNs y servicios auxiliares legítimos comunes en feeds
     "0xword.com", "mypublicinbox.com", "blogger.com", "1.bp.blogspot.com", "blogspot.com",
     "googleusercontent.com", "feedburner.com", "github.io", "githubusercontent.com",

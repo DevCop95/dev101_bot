@@ -2,9 +2,7 @@ name: CI
 
 on:
   pull_request:
-  # main ya ejecuta esta CI desde bot.yml (workflow_call); evita correrla dos veces.
   push:
-    branches-ignore: [main]
   schedule:
     - cron: '21 5 * * 1'
   workflow_call:

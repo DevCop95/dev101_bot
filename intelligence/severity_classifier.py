@@ -19,10 +19,17 @@ def strip_accents(s):
 
 # ── Clasificación por keywords (en minúsculas y sin acentos) ─────────────────
 
+# En español NO usar "critica"/"critico" sueltos: casan con el verbo "criticar"
+# ("Musk critica a OpenAI") o expresiones no técnicas ("masa crítica", "pensamiento crítico").
 EXPLICIT_CRITICAL = [
-    "critica", "critico", "critical", "severidad critica", "critical severity",
-    "criticidad maxima", "fallo critico", "critical flaw", "vulnerabilidad critica",
-    "critical vulnerability", "alerta critica", "critical alert",
+    "severidad critica", "critical severity", "criticidad maxima",
+    "fallo critico", "fallos criticos", "falla critica", "fallas criticas",
+    "critical flaw", "critical flaws", "critical bug", "critical security",
+    "vulnerabilidad critica", "vulnerabilidades criticas",
+    "critical vulnerability", "critical vulnerabilities",
+    "alerta critica", "critical alert", "amenaza critica", "riesgo critico",
+    "brecha critica", "parche critico", "critical patch", "error critico",
+    "bug critico", "rce critico", "rce critica", "critical rce",
 ]
 
 EXPLICIT_HIGH = [

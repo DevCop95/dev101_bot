@@ -161,9 +161,10 @@ def groq_chat(**kwargs):
                 if _clasificar_error(error) != "model" or kwargs.get("model") == GROQ_FALLBACK_MODEL:
                     raise
                 logger.warning("Groq key #%s: modelo no disponible; usando modelo de respaldo", _idx + 1)
-                response = _clients[_idx].chat.completions.create(
-                    **dict(kwargs, model=GROQ_FALLBACK_MODEL)
-                )
+                fallback_kwargs = dict(kwargs, model=GROQ_FALLBACK_MODEL)
+                if GROQ_FALLBACK_MODEL not in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
+                    fallback_kwargs.pop("reasoning_effort", None)
+                response = _clients[_idx].chat.completions.create(**fallback_kwargs)
         except Exception as e:
             kind = _clasificar_error(e)
             if kind in ("auth", "quota"):

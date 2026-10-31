@@ -218,6 +218,8 @@ export class WebhookState {
 
   async fetch(request) {
     const { updateId, chatId, text } = await request.json()
+    // En grupos de Telegram el autocompletado envía "/noticias@nombre_bot".
+    const command = text.replace(/^(\/(?:noticias|start|help))@[A-Za-z0-9_]+$/i, "$1")
     const key = `update:${updateId}`
     const claim = await this.storage.transaction(async tx => {
       const now = Date.now()
@@ -232,8 +234,8 @@ export class WebhookState {
       }
       // Never evict unexpired dedup records to make room: fail closed instead.
       if (meta.count >= MAX_UPDATES) return { full: true }
-      const retryAfter = text === "/noticias" ? Math.max(0, Math.ceil((meta.cooldownUntil - now) / 1000)) : 0
-      if (text === "/noticias" && !retryAfter) meta.cooldownUntil = now + COOLDOWN_MS
+      const retryAfter = command === "/noticias" ? Math.max(0, Math.ceil((meta.cooldownUntil - now) / 1000)) : 0
+      if (command === "/noticias" && !retryAfter) meta.cooldownUntil = now + COOLDOWN_MS
       const record = { status: "processing", expiresAt: now + DEDUP_TTL_MS, retryAfter }
       await tx.put(key, record)
       await tx.put(`expiry:${String(record.expiresAt).padStart(16, "0")}:${updateId}`, key)
@@ -256,14 +258,14 @@ export class WebhookState {
       if (retryAfter) {
         status = "rate_limited"
         notificationText = `Espera ${retryAfter} segundos y envia /noticias de nuevo.`
-      } else if (text === "/noticias") {
+      } else if (command === "/noticias") {
         status = await triggerGithubAction(this.env.GH_PAT_ENV)
         notificationText = {
           dispatched: "Job lanzado: tests + busqueda de noticias, llegan en unos minutos.",
           dispatch_failed: "GitHub rechazo el job. Revisa GitHub Actions antes de intentarlo de nuevo.",
           uncertain: "No se pudo confirmar el job. Revisa GitHub Actions antes de volver a pedir noticias."
         }[status]
-      } else if (text === "/start" || text === "/help") {
+      } else if (command === "/start" || command === "/help") {
         notificationText = "dev101_bot\n\n/noticias - busca y envia noticias ahora\n/help - muestra este mensaje\n\nEnvio automatico cada 3 horas via GitHub Actions."
       } else {
         notificationText = "Comando no reconocido. Usa /help."
